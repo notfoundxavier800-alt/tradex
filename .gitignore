@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.apk
+cloudflared.exe
+*.log
+scratch/
+.system_generated/

@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.github
+*.log
+START_BOT.bat

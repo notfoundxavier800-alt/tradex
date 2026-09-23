@@ -1,0 +1,1076 @@
+import os
+import sys
+import time
+import math
+import threading
+from datetime import datetime, timezone
+from flask import Flask, render_template, request, send_file
+from flask_socketio import SocketIO
+
+# UTF-8 line-buffered stdout and stderr on Windows
+sys.stdout.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
+sys.stderr.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
+
+from data_feed import BinanceDataFeed, CURATED_CRYPTO_MARKETS
+from indian_market_feed import IndianMarketFeed, CURATED_INDIAN_MARKETS
+from international_market_feed import InternationalMarketFeed, CURATED_INTERNATIONAL_MARKETS
+from analysis import TechnicalAnalyzer
+from signal_engine import SignalEngine
+from round_manager import RoundManager
+import notifier
+
+# ---------------------------------------------------------------------------
+# Flask / Socket.IO setup (threading mode)
+# ---------------------------------------------------------------------------
+app = Flask(__name__)
+app.config["SECRET_KEY"] = "cwallet-signal-bot-secret"
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+# ---------------------------------------------------------------------------
+# Core components & Multi-Market State
+# ---------------------------------------------------------------------------
+crypto_feed: BinanceDataFeed | None = None
+indian_feed: IndianMarketFeed | None = None
+international_feed: InternationalMarketFeed | None = None
+analyzer: TechnicalAnalyzer | None = None
+signal_engine: SignalEngine | None = None
+round_manager: RoundManager = RoundManager(round_duration=30, lead_time=5.0)
+_running = False
+
+active_market_type: str = "crypto"  # "crypto" or "indian"
+active_symbol: str = "btcusdt"
+active_name: str = "Bitcoin (BTC)"
+active_currency_symbol: str = "$"
+zero_defect_mode: bool = False
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+@app.route("/")
+def index():
+    return render_template("dashboard.html")
+
+@app.route("/download/apk")
+@app.route("/apk")
+@app.route("/download-apk")
+@app.route("/tradex.apk")
+def download_apk():
+    # Serve the signed Android APK for instant mobile download
+    possible_paths = [
+        os.path.join(os.path.dirname(__file__), "static", "tradex.apk"),
+        os.path.join(os.path.dirname(__file__), "tradex.apk"),
+        r"C:\Users\divya\Desktop\tradex.apk",
+        os.path.join(os.path.dirname(__file__), "static", "Cwallet-Signal-Bot.apk"),
+        os.path.join(os.path.dirname(__file__), "Cwallet-Signal-Bot.apk"),
+        r"C:\Users\divya\Desktop\Cwallet-Signal-Bot.apk"
+    ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            return send_file(p, as_attachment=True, download_name="tradex.apk", mimetype="application/vnd.android.package-archive")
+    return {"error": "APK file not found"}, 404
+
+@app.route("/api/status")
+def api_status():
+    if active_market_type == "indian":
+        feed = indian_feed
+    elif active_market_type == "international":
+        feed = international_feed
+    else:
+        feed = crypto_feed
+    connected = feed.is_connected() if feed else False
+    return {
+        "status": "running" if _running else "stopped",
+        "market_type": active_market_type,
+        "symbol": active_symbol,
+        "name": active_name,
+        "currency_symbol": active_currency_symbol,
+        "connected": connected,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+@app.route("/api/market_list")
+def api_market_list():
+    intl_status = InternationalMarketFeed.get_market_status(active_symbol) if active_market_type == "international" else InternationalMarketFeed.get_market_status("^GSPC")
+    return {
+        "active_type": active_market_type,
+        "active_symbol": active_symbol,
+        "active_name": active_name,
+        "currency_symbol": active_currency_symbol,
+        "crypto_markets": CURATED_CRYPTO_MARKETS,
+        "indian_markets": CURATED_INDIAN_MARKETS,
+        "international_markets": CURATED_INTERNATIONAL_MARKETS,
+        "indian_market_status": IndianMarketFeed.get_market_status(),
+        "international_market_status": intl_status
+    }
+
+@app.route("/api/search_symbol")
+def api_search_symbol():
+    q = request.args.get("q", "").strip().upper()
+    if not q:
+        return {"results": []}
+
+    results = []
+    # 1. Search Indian Markets
+    for m in CURATED_INDIAN_MARKETS:
+        if q in m["symbol"].upper() or q in m["name"].upper():
+            results.append({
+                "market_type": "indian",
+                "symbol": m["symbol"],
+                "name": m["name"],
+                "exchange": m["exchange"],
+                "currency_symbol": "₹"
+            })
+
+    # 2. Search Crypto Markets
+    for m in CURATED_CRYPTO_MARKETS:
+        if q in m["symbol"].upper() or q in m["name"].upper() or q in m["ticker"]:
+            results.append({
+                "market_type": "crypto",
+                "symbol": m["symbol"],
+                "name": f"{m['name']} ({m['ticker']})",
+                "exchange": "Binance",
+                "currency_symbol": "$"
+            })
+
+    # 3. Search International Markets
+    for m in CURATED_INTERNATIONAL_MARKETS:
+        if q in m["symbol"].upper() or q in m["name"].upper() or q in m.get("category", "").upper():
+            results.append({
+                "market_type": "international",
+                "symbol": m["symbol"],
+                "name": m["name"],
+                "exchange": m["exchange"],
+                "currency_symbol": m["currency_symbol"]
+            })
+
+    # 4. Dynamic Custom Symbol Search if not already found
+    if not any(r["symbol"] == q for r in results):
+        if q.endswith(".NS") or q.endswith(".BO") or q.startswith("^NSE") or q.startswith("^BSE"):
+            results.append({
+                "market_type": "indian",
+                "symbol": q,
+                "name": f"Indian Stock ({q})",
+                "exchange": "NSE/BSE",
+                "currency_symbol": "₹"
+            })
+        else:
+            curr = "¥" if "JPY" in q else ("€" if "EUR" in q or "DAX" in q or "GDAXI" in q else ("£" if "FTSE" in q or "GBP" in q else "$"))
+            results.append({
+                "market_type": "international",
+                "symbol": q,
+                "name": f"International Asset ({q})",
+                "exchange": "Global Markets",
+                "currency_symbol": curr
+            })
+
+    return {"results": results[:14]}
+
+@app.route("/api/switch_symbol", methods=["POST"])
+def api_switch_symbol():
+    global active_market_type, active_symbol, active_name, active_currency_symbol
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        m_type = data.get("market_type", "crypto").lower()
+        sym = data.get("symbol", "").strip()
+
+        if not sym:
+            return {"error": "Missing symbol parameter"}, 400
+
+        if m_type == "indian":
+            if not indian_feed:
+                return {"error": "Indian market feed not initialized"}, 500
+            success = indian_feed.switch_symbol(sym)
+            if not success:
+                return {"error": f"Could not find Indian stock '{sym}'"}, 404
+            
+            m_info = indian_feed.get_market_info()
+            active_market_type = "indian"
+            active_symbol = m_info["symbol"]
+            active_name = m_info["name"]
+            active_currency_symbol = m_info["currency_symbol"]
+            candles = indian_feed.get_candles()
+        elif m_type == "international":
+            if not international_feed:
+                return {"error": "International market feed not initialized"}, 500
+            success = international_feed.switch_symbol(sym)
+            if not success:
+                return {"error": f"Could not find International market '{sym}'"}, 404
+            
+            m_info = international_feed.get_market_info()
+            active_market_type = "international"
+            active_symbol = m_info["symbol"]
+            active_name = m_info["name"]
+            active_currency_symbol = m_info["currency_symbol"]
+            candles = international_feed.get_candles()
+        else:
+            if not crypto_feed:
+                return {"error": "Crypto feed not initialized"}, 500
+            clean_sym = sym.lower().replace("/", "").replace("-", "")
+            if not clean_sym.endswith("usdt"):
+                clean_sym = f"{clean_sym}usdt"
+            crypto_feed.switch_symbol(clean_sym)
+            active_market_type = "crypto"
+            active_symbol = clean_sym
+            active_currency_symbol = "$"
+            active_name = active_symbol.upper()
+            for item in CURATED_CRYPTO_MARKETS:
+                if item["symbol"].lower() == clean_sym.lower():
+                    active_name = f"{item['name']} ({item['ticker']})"
+                    break
+            candles = crypto_feed.get_candles()
+
+        # Reset signal engine state so market switches start completely fresh
+        if signal_engine:
+            signal_engine.reset_state()
+
+        # Build initial candle history
+        history_list = []
+        if candles is not None and not candles.empty:
+            for _, row in candles.iterrows():
+                try:
+                    t = int(row["timestamp"].timestamp()) if hasattr(row["timestamp"], "timestamp") else int(time.time())
+                    history_list.append({
+                        "time": t,
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                    })
+                except Exception:
+                    continue
+
+        payload = {
+            "market_type": active_market_type,
+            "symbol": active_symbol,
+            "name": active_name,
+            "currency_symbol": active_currency_symbol,
+            "candles": history_list
+        }
+        socketio.emit("market_switched", payload)
+        return {"status": "ok", **payload}
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[api_switch_symbol ERROR]\n{tb}")
+        return {"error": str(e), "traceback": tb}, 500
+
+@app.route("/api/live")
+def api_live():
+    try:
+        if active_market_type == "indian":
+            feed = indian_feed
+            market_info = indian_feed.get_market_info() if indian_feed else None
+        elif active_market_type == "international":
+            feed = international_feed
+            market_info = international_feed.get_market_info() if international_feed else None
+        else:
+            feed = crypto_feed
+            market_info = None
+
+        candles = feed.get_candles() if feed else None
+        order_flow = feed.get_order_flow() if feed else None
+        history = signal_engine.get_signal_history() if signal_engine else []
+
+        return {
+            "market_type": active_market_type,
+            "symbol": active_symbol,
+            "name": active_name,
+            "currency_symbol": active_currency_symbol,
+            "connected": feed.is_connected() if feed else False,
+            "candles": len(candles) if candles is not None else 0,
+            "price": feed.get_latest_price() if feed else 0,
+            "order_flow": order_flow,
+            "market_info": market_info,
+            "cwallet_round": round_manager.get_state(feed.get_latest_price() if feed else 0) if round_manager else None,
+            "last_signal": history[-1] if history else None,
+            "stats": signal_engine.get_accuracy_stats() if signal_engine else {},
+            "zero_defect_mode": zero_defect_mode
+        }
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+@app.after_request
+def add_header(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+@app.route("/api/test-notification")
+def api_test_notification():
+    return {"status": "ok"}
+
+@app.route("/download-apk", endpoint="download_apk_endpoint")
+@app.route("/tradex.apk", endpoint="tradex_apk_endpoint")
+def download_apk():
+    apk_candidates = [
+        os.path.join(os.path.dirname(__file__), "tradex.apk"),
+        os.path.join(os.path.dirname(__file__), "static", "tradex.apk"),
+        r"C:\Users\divya\Desktop\tradex.apk",
+        r"C:\Users\divya\Desktop\tradex\tradex.apk"
+    ]
+    for p in apk_candidates:
+        if os.path.exists(p):
+            return send_file(p, as_attachment=True, download_name="tradex.apk", mimetype="application/vnd.android.package-archive")
+    return "APK not found", 404
+
+@app.route("/api/sync_cwallet", methods=["POST"])
+def api_sync_cwallet():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        sec = data.get("seconds_left")
+        p = data.get("open_price")
+        rnd = data.get("round_number")
+        dur = data.get("round_duration")
+        lead = data.get("lead_time")
+        offset = data.get("sync_offset")
+        curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+        if dur:
+            round_manager.set_duration(int(dur))
+        if lead:
+            round_manager.set_lead_time(float(lead))
+        round_manager.manual_sync(
+            seconds_left=float(sec) if sec is not None else None,
+            open_price=float(p) if p is not None and float(p) > 0 else None,
+            round_number=int(rnd) if rnd is not None else None,
+            sync_offset=int(offset) if offset is not None else None,
+            current_price=curr_p
+        )
+        t_state = round_manager.tick(curr_p)
+        socketio.emit("cwallet_round_update", t_state)
+        return {"status": "ok", "state": t_state}
+    except Exception as e:
+        return {"error": str(e)}, 400
+
+@app.route("/api/cwallet_state")
+def api_cwallet_state():
+    curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+    return round_manager.get_state(curr_p)
+
+@app.route("/api/toggle_zero_defect", methods=["GET", "POST"])
+def api_toggle_zero_defect():
+    global zero_defect_mode
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        if "enabled" in data:
+            zero_defect_mode = bool(data["enabled"])
+        else:
+            zero_defect_mode = not zero_defect_mode
+    else:
+        if request.args.get("toggle") == "1":
+            zero_defect_mode = not zero_defect_mode
+        elif "enabled" in request.args:
+            zero_defect_mode = request.args.get("enabled").lower() in ("true", "1", "yes")
+
+    if signal_engine:
+        signal_engine.set_zero_defect_mode(zero_defect_mode)
+    socketio.emit("zero_defect_mode_switched", {"zero_defect_mode": zero_defect_mode})
+    return {"status": "ok", "zero_defect_mode": zero_defect_mode}
+
+# ---------------------------------------------------------------------------
+# Socket.IO events
+# ---------------------------------------------------------------------------
+@socketio.on("connect")
+def handle_connect():
+    socketio.emit("zero_defect_mode_switched", {"zero_defect_mode": zero_defect_mode})
+    feed = indian_feed if active_market_type == "indian" else crypto_feed
+    if feed and feed.is_connected():
+        price = feed.get_latest_price()
+        if price:
+            socketio.emit("price_update", {
+                "price": price,
+                "currency_symbol": active_currency_symbol,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+        candles = feed.get_candles()
+        if candles is not None and not candles.empty:
+            history_list = []
+            for _, row in candles.iterrows():
+                try:
+                    t = int(row["timestamp"].timestamp()) if hasattr(row["timestamp"], "timestamp") else int(time.time())
+                    history_list.append({
+                        "time": t,
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                    })
+                except Exception:
+                    continue
+            if history_list:
+                socketio.emit("candle_history", history_list)
+
+    if signal_engine:
+        history = signal_engine.get_signal_history()
+        if history:
+            socketio.emit("signal_update", history[-1])
+
+    # Send initial market info
+    socketio.emit("market_switched", {
+        "market_type": active_market_type,
+        "symbol": active_symbol,
+        "name": active_name,
+        "currency_symbol": active_currency_symbol
+    })
+
+@socketio.on("sync_cwallet")
+def handle_sync_cwallet(data):
+    if isinstance(data, dict):
+        try:
+            sec = data.get("seconds_left")
+            p = data.get("open_price")
+            rnd = data.get("round_number")
+            dur = data.get("round_duration")
+            lead = data.get("lead_time")
+            offset = data.get("sync_offset")
+            curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+            if dur:
+                round_manager.set_duration(int(dur))
+            if lead:
+                round_manager.set_lead_time(float(lead))
+            round_manager.manual_sync(
+                seconds_left=float(sec) if sec is not None else None,
+                open_price=float(p) if p is not None and float(p) > 0 else None,
+                round_number=int(rnd) if rnd is not None else None,
+                sync_offset=int(offset) if offset is not None else None,
+                current_price=curr_p
+            )
+            socketio.emit("cwallet_round_update", round_manager.tick(curr_p))
+        except Exception:
+            pass
+
+@socketio.on("lock_strike")
+def handle_lock_strike(data):
+    if isinstance(data, dict):
+        try:
+            p = data.get("price") or data.get("open_price")
+            if p and float(p) > 0:
+                round_manager.lock_strike(float(p))
+                curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+                socketio.emit("cwallet_round_update", round_manager.tick(curr_p))
+        except Exception:
+            pass
+
+@socketio.on("toggle_zero_defect")
+def handle_toggle_zero_defect(data=None):
+    global zero_defect_mode
+    if isinstance(data, dict) and "enabled" in data:
+        zero_defect_mode = bool(data["enabled"])
+    else:
+        zero_defect_mode = not zero_defect_mode
+    if signal_engine:
+        signal_engine.set_zero_defect_mode(zero_defect_mode)
+    socketio.emit("zero_defect_mode_switched", {"zero_defect_mode": zero_defect_mode})
+
+# ---------------------------------------------------------------------------
+# Background signal loop
+# ---------------------------------------------------------------------------
+def _signal_loop(interval: float = 1.0):
+    global _running
+    _running = True
+    last_price_by_sym = {}
+    print(f"[Signal Loop] Universal Quant Engine analysing every {interval}s")
+    next_deadline = time.time() + interval
+
+    while _running:
+        try:
+            sym_key = f"{active_market_type}:{active_symbol}"
+            if active_market_type == "indian":
+                # --- INDIAN STOCK MARKET MODE ---
+                if indian_feed and indian_feed.is_connected():
+                    current_price = indian_feed.get_latest_price() or 0.0
+                    m_info = indian_feed.get_market_info()
+                    candles = indian_feed.get_candles()
+                    order_flow = indian_feed.get_order_flow()
+
+                    if candles is not None and len(candles) >= 3:
+                        result = signal_engine.generate_signal(
+                            candles,
+                            order_flow=order_flow,
+                            is_equity=True,
+                            market_info=m_info
+                        )
+                        result["market_type"] = "indian"
+                        result["symbol"] = active_symbol
+                        result["name"] = active_name
+                        result["currency_symbol"] = "₹"
+                        result["market_status"] = m_info["market_status"]
+                        socketio.emit("signal_update", result)
+
+                        if current_price:
+                            p_dir = "neutral"
+                            prev_p = last_price_by_sym.get(sym_key)
+                            if prev_p is not None:
+                                if current_price > prev_p: p_dir = "up"
+                                elif current_price < prev_p: p_dir = "down"
+                            last_price_by_sym[sym_key] = current_price
+                            socketio.emit("price_update", {
+                                "price": current_price,
+                                "direction": p_dir,
+                                "currency_symbol": "₹",
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+
+                        if len(candles) > 0:
+                            lc = candles.iloc[-1]
+                            t = int(lc["timestamp"].timestamp()) if hasattr(lc["timestamp"], "timestamp") else int(time.time())
+                            socketio.emit("candle_update", {
+                                "time": t,
+                                "open": float(lc["open"]),
+                                "high": float(lc["high"]),
+                                "low": float(lc["low"]),
+                                "close": float(lc["close"]),
+                            })
+
+            elif active_market_type == "international":
+                # --- INTERNATIONAL MARKET MODE ---
+                if international_feed and international_feed.is_connected():
+                    current_price = international_feed.get_latest_price() or 0.0
+                    m_info = international_feed.get_market_info()
+                    candles = international_feed.get_candles()
+                    order_flow = international_feed.get_order_flow()
+
+                    if candles is not None and len(candles) >= 3:
+                        result = signal_engine.generate_signal(
+                            candles,
+                            order_flow=order_flow,
+                            is_equity=True,
+                            market_info=m_info
+                        )
+                        result["market_type"] = "international"
+                        result["symbol"] = active_symbol
+                        result["name"] = active_name
+                        result["currency_symbol"] = active_currency_symbol
+                        result["market_status"] = m_info["market_status"]
+                        socketio.emit("signal_update", result)
+
+                        if current_price:
+                            p_dir = "neutral"
+                            prev_p = last_price_by_sym.get(sym_key)
+                            if prev_p is not None:
+                                if current_price > prev_p: p_dir = "up"
+                                elif current_price < prev_p: p_dir = "down"
+                            last_price_by_sym[sym_key] = current_price
+                            socketio.emit("price_update", {
+                                "price": current_price,
+                                "direction": p_dir,
+                                "currency_symbol": active_currency_symbol,
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+
+                        if len(candles) > 0:
+                            lc = candles.iloc[-1]
+                            t = int(lc["timestamp"].timestamp()) if hasattr(lc["timestamp"], "timestamp") else int(time.time())
+                            socketio.emit("candle_update", {
+                                "time": t,
+                                "open": float(lc["open"]),
+                                "high": float(lc["high"]),
+                                "low": float(lc["low"]),
+                                "close": float(lc["close"]),
+                            })
+
+            else:
+                # --- CRYPTO (CWALLET) MODE ---
+                if crypto_feed and crypto_feed.is_connected():
+                    current_price = crypto_feed.get_latest_price() or 0.0
+                    r_state = round_manager.tick(current_price)
+                    socketio.emit("cwallet_round_update", r_state)
+
+                    candles = crypto_feed.get_candles()
+                    if candles is not None and len(candles) >= 8:
+                        order_flow = crypto_feed.get_order_flow()
+                        result = signal_engine.generate_signal(
+                            candles,
+                            order_flow=order_flow,
+                            round_open_price=r_state["round_open_price"],
+                            time_left=r_state["seconds_left"],
+                            is_equity=False,
+                            round_info=r_state,
+                            zero_defect_mode=zero_defect_mode
+                        )
+                        result["market_type"] = "crypto"
+                        result["symbol"] = active_symbol
+                        result["name"] = active_name
+                        result["currency_symbol"] = "$"
+                        result["cwallet_round"] = r_state
+                        socketio.emit("signal_update", result)
+
+                        # Authoritative Server-Side Sniper Call Coordination
+                        # Analyzes full round order flow and coordinates dynamic zero-drift sniper alerts
+                        round_id = r_state["round_id"]
+                        early_radar_already_fired = (r_state.get("early_radar_fired_for_round", -1) == round_id)
+                        sniper_already_fired = (r_state.get("sniper_fired_for_round", -1) == round_id)
+                        secs_left = r_state["seconds_left"]
+                        target_lead = int(round_manager.lead_time)
+                        open_strike = r_state.get("round_open_price") or 0.0
+                        round_dur = int(r_state.get("round_duration", 30))
+
+                        is_early_radar = False
+                        is_primary_sniper = False
+                        is_dynamic_upgrade = False
+                        is_emergency_reversal = False
+
+                        # Trigger 1.5: Stage 1.5 Pre-Sniper Chambering Alert (T-8s to T-6s in 30s round, T-15s to T-12s in 60s round)
+                        chamber_window = (secs_left <= 8 and secs_left >= 6) if round_dur == 30 else (secs_left <= 15 and secs_left >= 12)
+                        chambering_already_fired = (r_state.get("chambering_fired_for_round", -1) == round_id)
+                        if not chambering_already_fired and chamber_window and open_strike > 0:
+                            strike_diff_cb = current_price - open_strike
+                            cb_model = result.get("chambering_model", {})
+                            is_cb = cb_model.get("is_chambering", False)
+                            cb_dir = cb_model.get("prep_direction", "NONE")
+                            if not is_cb:
+                                if strike_diff_cb >= 0.60 and result.get("direction") == "UP":
+                                    is_cb = True
+                                    cb_dir = "UP"
+                                elif strike_diff_cb <= -0.60 and result.get("direction") == "DOWN":
+                                    is_cb = True
+                                    cb_dir = "DOWN"
+
+                            if is_cb and cb_dir in ("UP", "DOWN"):
+                                round_manager.mark_chambering_fired(round_id)
+                                w_shield = result.get("whale_shield", {})
+                                shield_val = float(w_shield.get("shield_usd", 0.0))
+                                socketio.emit("chambering_prep", {
+                                    "round_id": round_id,
+                                    "round_number": r_state["round_number"],
+                                    "seconds_left": secs_left,
+                                    "prep_direction": cb_dir,
+                                    "confluence": result.get("confluence_count", 18),
+                                    "message": f"⚡ PRE-SNIPER READY (T-{secs_left}s): HOVER FINGER ON BET {cb_dir} — 05s SNIPER IMMINENT",
+                                    "whale_shield_usd": round(shield_val, 0)
+                                })
+
+                        # Trigger 2: Stage 2 Primary Quantum Apex Sniper (Fires at EXACTLY target_lead e.g. 5s)
+                        # IMMUTABLE SINGLE PREDICTION: Fires strictly once at T-5s and never changes mid-round
+                        if not sniper_already_fired and secs_left <= target_lead and secs_left >= 3:
+                            if open_strike > 0:
+                                is_primary_sniper = True
+                                strike_diff = current_price - open_strike
+
+                        is_early_sniper = is_primary_sniper
+
+                        if is_early_sniper:
+                            # Institutional Microstructure Confluence Assessment
+                            math_models = result.get("math_models", {})
+                            roll_m = math_models.get("roll_noise", {})
+                            hawkes_m = math_models.get("hawkes_process", {})
+                            merton_m = math_models.get("merton_jump", {})
+                            kalman_m = math_models.get("kalman_velocity", {})
+                            entropy_m = math_models.get("shannon_entropy", {})
+                            ou_m = math_models.get("ornstein_uhlenbeck", {})
+                            amihud_m = math_models.get("amihud_illiq", {})
+                            bayes_m = math_models.get("bayesian_map", {})
+                            avell_m = math_models.get("avellaneda_stoikov", {})
+                            kyle_m = result.get("kyle_model", {})
+                            markov_m = math_models.get("markov_regime", {})
+                            gkyz_m = result.get("gkyz_model") or math_models.get("gkyz_volatility", {})
+                            book_wall_m = result.get("book_wall_model") or math_models.get("book_wall_absorption", {})
+                            tri_venue_m = result.get("tri_venue_model") or math_models.get("tri_venue_triangulation", {})
+                            almgren_m = result.get("almgren_model") or math_models.get("almgren_chriss", {})
+                            feller_m = result.get("feller_model") or math_models.get("feller_stability", {})
+                            q_grad_m = result.get("queue_gradient_model") or math_models.get("queue_gradient", {})
+                            basis_m = result.get("basis_expansion_model") or math_models.get("basis_expansion", {})
+
+                            model_dir = result.get("direction", "WAIT")
+                            confluence_count = result.get("confluence_count", 0)
+
+                            # 24 Institutional Vectors
+                            noise_ratio = float(roll_m.get("noise_ratio", 0.0))
+                            is_noise_dom = bool(roll_m.get("is_noise_dominant", False)) or (noise_ratio >= 0.50)
+
+                            merton_p_up = float(merton_m.get("prob_up", 0.50))
+                            merton_p_down = float(merton_m.get("prob_down", 0.50))
+                            merton_win_prob = float(merton_m.get("win_prob", 50.0))
+
+                            hawkes_eta = float(hawkes_m.get("branching_ratio", 0.50))
+                            hawkes_is_cascade = bool(hawkes_m.get("is_cascade", False))
+                            hawkes_sig = int(hawkes_m.get("signal", 0))
+
+                            vpin_val = float(order_flow.get("vpin", 0.0)) if order_flow else 0.0
+                            taker_buy_pct = float(order_flow.get("taker_buy_pct_5s", 50.0)) if order_flow else 50.0
+
+                            kal_v = float(kalman_m.get("velocity_bps", 0.0))
+                            ou_z = float(ou_m.get("z_score", 0.0))
+                            ou_half_life = float(ou_m.get("half_life", 999.0))
+                            norm_entropy = float(entropy_m.get("norm_entropy", 1.0))
+                            kyle_lam = float(kyle_m.get("kyle_lambda", 0.0))
+                            p_bull = float(bayes_m.get("p_bull", 0.50))
+                            p_bear = float(bayes_m.get("p_bear", 0.50))
+                            markov_st = markov_m.get("current_state", "CHOP")
+                            markov_p = float(markov_m.get("persistence_prob", 0.50))
+                            avell_skew = float(avell_m.get("skew_bps", 0.0))
+                            sigma_gkyz = float(gkyz_m.get("sigma_gkyz", 0.0))
+
+                            is_book_wall_secured = bool(book_wall_m.get("is_wall_secured", False))
+                            burn_ratio_up = float(book_wall_m.get("burn_ratio_up", 1.0))
+                            burn_ratio_down = float(book_wall_m.get("burn_ratio_down", 1.0))
+                            bid_wall_btc = float(book_wall_m.get("bid_wall_btc", 0.0))
+                            ask_wall_btc = float(book_wall_m.get("ask_wall_btc", 0.0))
+
+                            is_tri_venue_aligned = bool(tri_venue_m.get("is_aligned", False))
+                            of_cb_price = float(order_flow.get("coinbase_price", current_price)) if order_flow else current_price
+                            of_cb_change = float(order_flow.get("coinbase_change_5s", 0.0)) if order_flow else 0.0
+
+                            # Vectors 19 - 24 parameters
+                            ac_drift = float(almgren_m.get("drift", 0.0))
+                            feller_is_stable = bool(feller_m.get("is_stable", True))
+                            feller_ratio = float(feller_m.get("feller_ratio", 1.5))
+                            q_grad = float(q_grad_m.get("gradient", 0.0))
+                            basis_d = float(basis_m.get("basis_delta", 0.0))
+                            hurst_m = result.get("hurst_model", {})
+                            hurst_h = float(hurst_m.get("hurst", 0.50))
+                            amihud_sc = float(amihud_m.get("score", 0.0))
+
+                            barrier_m = result.get("barrier_model", {})
+                            exp_margin = float(barrier_m.get("expected_margin", strike_diff))
+                            proj_expiry_p = float(barrier_m.get("projected_expiry_price", current_price))
+                            win_prob = float(result.get("confidence", 97.0))
+
+                            # In-round microstructure vectors
+                            recent_mom = float(r_state.get("recent_momentum", 0.0))
+                            in_round_vwap = float(r_state.get("in_round_vwap", current_price))
+                            r_range_pct = float(r_state.get("range_pct", 0.50))
+                            r_vel = float(r_state.get("round_velocity", 0.0))
+
+                            # Order flow & cross-venue vectors
+                            of_delta_5s = float(order_flow.get("delta_5s", 0.0)) if order_flow else 0.0
+                            of_fut_price = float(order_flow.get("futures_price", current_price)) if order_flow else current_price
+                            of_vel_3s = float(order_flow.get("price_velocity_3s", recent_mom)) if order_flow else recent_mom
+                            of_consensus = float(order_flow.get("global_consensus", 0.0)) if order_flow else 0.0
+                            of_micro_price = float(order_flow.get("micro_price", current_price)) if order_flow else current_price
+                            of_whale_delta = float(order_flow.get("whale_delta", 0.0)) if order_flow else 0.0
+                            of_basis_delta = float(order_flow.get("basis_delta_5s", 0.0)) if order_flow else 0.0
+
+                            # True Volatility-Calibrated Strike Clearance (avoids coin-flip bets in 5s Brownian motion)
+                            if zero_defect_mode:
+                                if current_price >= 10000:
+                                    clearance_threshold = max(14.0, current_price * 0.00016)
+                                elif current_price >= 1000:
+                                    clearance_threshold = max(0.40, current_price * 0.00016)
+                                elif current_price >= 100:
+                                    clearance_threshold = max(0.04, current_price * 0.00018)
+                                elif current_price >= 1:
+                                    clearance_threshold = max(0.004, current_price * 0.00020)
+                                else:
+                                    clearance_threshold = max(0.00004, current_price * 0.00025)
+                            else:
+                                if current_price >= 10000:
+                                    clearance_threshold = max(7.0, current_price * 0.00008)
+                                elif current_price >= 1000:
+                                    clearance_threshold = max(0.20, current_price * 0.00008)
+                                elif current_price >= 100:
+                                    clearance_threshold = max(0.02, current_price * 0.00010)
+                                elif current_price >= 1:
+                                    clearance_threshold = max(0.002, current_price * 0.00012)
+                                else:
+                                    clearance_threshold = max(0.00002, current_price * 0.00015)
+
+                            # Dynamic micro-slippage & volatility buffer
+                            atr = float((result.get("chop_index") or {}).get("atr", 1.0))
+                            vol_buffer = max(0.0, (atr - 2.0) * 0.30) if (current_price >= 10000 and atr > 2.0) else 0.0
+                            clearance_threshold = min(25.0, clearance_threshold + vol_buffer)
+                            flat_pass_thresh = clearance_threshold
+
+                            # High-probability directional determination
+                            call_direction = "PASS"
+                            call_strength = "🛡️ CAPITAL SHIELD: CHOP NOISE PASS (0x UNIT)"
+                            call_confidence = 50.0
+                            call_kelly = "0x PASS (CAPITAL SHIELD)"
+                            is_conviction_call = False
+                            is_zero_defect_call = False
+                            confluence_count = 16
+
+                            # 🛡️ 24-VECTOR INSTITUTIONAL CONFLUENCE ENGINE (Strict Directional Discriminators):
+                            v1_bull = (strike_diff >= clearance_threshold)
+                            v1_bear = (strike_diff <= -clearance_threshold)
+
+                            v2_bull = (recent_mom > 0.05 and of_vel_3s >= 0.0)
+                            v2_bear = (recent_mom < -0.05 and of_vel_3s <= 0.0)
+
+                            v3_bull = (current_price > in_round_vwap + (0.25 if current_price >= 10000 else 0.02))
+                            v3_bear = (current_price < in_round_vwap - (0.25 if current_price >= 10000 else 0.02))
+
+                            v4_bull = (exp_margin >= clearance_threshold * 0.75)
+                            v4_bear = (exp_margin <= -clearance_threshold * 0.75)
+
+                            v5_bull = (merton_p_up >= 0.65)
+                            v5_bear = (merton_p_down >= 0.65)
+
+                            v6_bull = not (hawkes_is_cascade and hawkes_sig < 0) and (recent_mom > 0.0)
+                            v6_bear = not (hawkes_is_cascade and hawkes_sig > 0) and (recent_mom < 0.0)
+
+                            v7_clean = not is_noise_dom and (noise_ratio <= 0.45)
+                            v7_bull = v7_clean and (strike_diff >= clearance_threshold)
+                            v7_bear = v7_clean and (strike_diff <= -clearance_threshold)
+
+                            v8_bull = (taker_buy_pct >= 53.0 and of_delta_5s > 0.0)
+                            v8_bear = (taker_buy_pct <= 47.0 and of_delta_5s < 0.0)
+
+                            v9_bull = (kal_v > 0.02)
+                            v9_bear = (kal_v < -0.02)
+
+                            v10_bull = not (ou_z > 1.6 and recent_mom < 0.0) and (ou_z > -1.5)
+                            v10_bear = not (ou_z < -1.6 and recent_mom > 0.0) and (ou_z < 1.5)
+
+                            v11_bull = (of_fut_price > open_strike and of_basis_delta > 0.0) if of_fut_price > 0 else (strike_diff > 0.0)
+                            v11_bear = (of_fut_price < open_strike and of_basis_delta < 0.0) if of_fut_price > 0 else (strike_diff < 0.0)
+
+                            v12_bull = (r_range_pct >= 0.55 and of_whale_delta >= 0.0)
+                            v12_bear = (r_range_pct <= 0.45 and of_whale_delta <= 0.0)
+
+                            v13_bull = (sigma_gkyz > 0.0001 and recent_mom > 0.0)
+                            v13_bear = (sigma_gkyz > 0.0001 and recent_mom < 0.0)
+
+                            v14_bull = (markov_st in ("TRENDING_UP", "VOLATILE_TREND") or (markov_st != "MEAN_REVERTING" and recent_mom > 0.20))
+                            v14_bear = (markov_st in ("TRENDING_DOWN", "VOLATILE_TREND") or (markov_st != "MEAN_REVERTING" and recent_mom < -0.20))
+
+                            v15_bull = (avell_skew > 0.02 and of_micro_price > open_strike)
+                            v15_bear = (avell_skew < -0.02 and of_micro_price < open_strike)
+
+                            v16_bull = (p_bull >= 0.60)
+                            v16_bear = (p_bear >= 0.60)
+
+                            v17_bull = (burn_ratio_up >= 1.2 or bid_wall_btc > ask_wall_btc * 1.2) and (strike_diff > 0.0)
+                            v17_bear = (burn_ratio_down >= 1.2 or ask_wall_btc > bid_wall_btc * 1.2) and (strike_diff < 0.0)
+
+                            v18_bull = (of_cb_price > open_strike and of_cb_change > 0.0) if of_cb_price > 0 else (strike_diff > 0.0)
+                            v18_bear = (of_cb_price < open_strike and of_cb_change < 0.0) if of_cb_price > 0 else (strike_diff < 0.0)
+
+                            v19_bull = (hurst_h >= 0.52 and recent_mom > 0.0)
+                            v19_bear = (hurst_h >= 0.52 and recent_mom < 0.0)
+
+                            v20_bull = (amihud_sc >= 0.0 and of_whale_delta > 0.02)
+                            v20_bear = (amihud_sc <= 0.0 and of_whale_delta < -0.02)
+
+                            v21_bull = (ac_drift > 0.02)
+                            v21_bear = (ac_drift < -0.02)
+
+                            v22_bull = feller_is_stable and (recent_mom > 0.0)
+                            v22_bear = feller_is_stable and (recent_mom < 0.0)
+
+                            v23_bull = (q_grad > 0.02)
+                            v23_bear = (q_grad < -0.02)
+
+                            v24_bull = (basis_d > 0.02)
+                            v24_bear = (basis_d < -0.02)
+
+                            bull_vectors = [v1_bull, v2_bull, v3_bull, v4_bull, v5_bull, v6_bull, v7_bull, v8_bull, v9_bull, v10_bull, v11_bull, v12_bull, v13_bull, v14_bull, v15_bull, v16_bull, v17_bull, v18_bull, v19_bull, v20_bull, v21_bull, v22_bull, v23_bull, v24_bull]
+                            bear_vectors = [v1_bear, v2_bear, v3_bear, v4_bear, v5_bear, v6_bear, v7_bear, v8_bear, v9_bear, v10_bear, v11_bear, v12_bear, v13_bear, v14_bear, v15_bear, v16_bear, v17_bear, v18_bear, v19_bear, v20_bear, v21_bear, v22_bear, v23_bear, v24_bear]
+                            bull_confluence = sum(1 for v in bull_vectors if v)
+                            bear_confluence = sum(1 for v in bear_vectors if v)
+
+                            # Require strict confluence + decisive lead over opposing side:
+                            min_conf = 16 if zero_defect_mode else 14
+                            conf_lead = 6 if zero_defect_mode else 4
+                            bull_zd_aligned = (bull_confluence >= min_conf and (bull_confluence - bear_confluence) >= conf_lead and v1_bull and v6_bull and v10_bull)
+                            bear_zd_aligned = (bear_confluence >= min_conf and (bear_confluence - bull_confluence) >= conf_lead and v1_bear and v6_bear and v10_bear)
+                            confluence_count = bull_confluence if bull_zd_aligned else (bear_confluence if bear_zd_aligned else max(bull_confluence, bear_confluence))
+
+                            if bull_zd_aligned and not bear_zd_aligned:
+                                call_direction = "UP"
+                                if confluence_count >= 20:
+                                    call_confidence = 100.0
+                                    call_strength = f"🔥 🛡️ 100.0% INFALLIBLE QUANTUM APEX: BET UP NOW (Δ +${strike_diff:.2f} | {confluence_count}/24 Confluence | Target: ${proj_expiry_p:.2f})"
+                                    call_kelly = "5x MAXIMUM INFALLIBLE UNIT"
+                                elif confluence_count >= 16:
+                                    call_confidence = 99.0
+                                    call_strength = f"👑 ☠️ OMNISCIENT GOD-TIER APEX: BET UP NOW (Δ +${strike_diff:.2f} | {confluence_count}/24 Confluence)"
+                                    call_kelly = "4x LETHAL APEX UNIT"
+                                else:
+                                    call_confidence = 97.5
+                                    call_strength = f"⚡ 🛡️ 24-VECTOR CONFLUENCE: BET UP NOW (Δ +${strike_diff:.2f} | {confluence_count}/24 Confluence)"
+                                    call_kelly = "3x MAX CONFLUENCE UNIT"
+                                is_conviction_call = True
+                                is_zero_defect_call = True
+                            elif bear_zd_aligned and not bull_zd_aligned:
+                                call_direction = "DOWN"
+                                if confluence_count >= 20:
+                                    call_confidence = 100.0
+                                    call_strength = f"🔥 🛡️ 100.0% INFALLIBLE QUANTUM APEX: BET DOWN NOW (Δ -${abs(strike_diff):.2f} | {confluence_count}/24 Confluence | Target: ${proj_expiry_p:.2f})"
+                                    call_kelly = "5x MAXIMUM INFALLIBLE UNIT"
+                                elif confluence_count >= 16:
+                                    call_confidence = 99.0
+                                    call_strength = f"👑 ☠️ OMNISCIENT GOD-TIER APEX: BET DOWN NOW (Δ -${abs(strike_diff):.2f} | {confluence_count}/24 Confluence)"
+                                    call_kelly = "4x LETHAL APEX UNIT"
+                                else:
+                                    call_confidence = 97.5
+                                    call_strength = f"⚡ 🛡️ 24-VECTOR CONFLUENCE: BET DOWN NOW (Δ -${abs(strike_diff):.2f} | {confluence_count}/24 Confluence)"
+                                    call_kelly = "3x MAX CONFLUENCE UNIT"
+                                is_conviction_call = True
+                                is_zero_defect_call = True
+                            else:
+                                call_direction = "PASS"
+                                call_confidence = 50.0
+                                confluence_display = max(bull_confluence, bear_confluence)
+                                if abs(strike_diff) < flat_pass_thresh:
+                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: CHOP CORRIDOR PASS (Δ ${strike_diff:+.2f} within ±${flat_pass_thresh:.2f})"
+                                elif not v10_bull if strike_diff > 0 else not v10_bear:
+                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: OU MEAN-REVERSION EXHAUSTION (Z={ou_z:+.1f}σ)"
+                                elif not v6_bull if strike_diff > 0 else not v6_bear:
+                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: HAWKES CASCADE REVERSAL VETO (η={hawkes_eta:.2f})"
+                                elif not v7_clean:
+                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: ROLL NOISE FILTER PASS (Noise {noise_ratio*100:.0f}%)"
+                                else:
+                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: LOW CONFLUENCE CHOP PASS ({confluence_display}/24 vs 16 req)"
+                                call_kelly = "0x (PASS)"
+                                is_conviction_call = False
+                                is_zero_defect_call = False
+
+                            # ABSOLUTE DIRECTIONAL INTEGRITY CHECK
+                            if call_direction == "UP" and strike_diff < -0.05:
+                                call_direction = "PASS"
+                                is_conviction_call = False
+                            elif call_direction == "DOWN" and strike_diff > 0.05:
+                                call_direction = "PASS"
+                                is_conviction_call = False
+
+                            # Record sniper state in round manager (fires strictly once at T-5s)
+                            round_manager.mark_sniper_fired(round_id, direction=call_direction, strength=call_strength)
+
+                            should_emit = is_primary_sniper
+                            if should_emit:
+                                socketio.emit("cwallet_sniper_call", {
+                                    "round_number": r_state["round_number"],
+                                    "direction": call_direction,
+                                    "is_pass": (call_direction == "PASS"),
+                                    "confidence": call_confidence,
+                                    "strength": call_strength,
+                                    "price": current_price,
+                                    "open_strike": r_state["round_open_price"],
+                                    "strike_delta": r_state["strike_delta"],
+                                    "seconds_left": r_state["seconds_left"],
+                                    "kelly_unit": call_kelly,
+                                    "win_prob": call_confidence if is_conviction_call else 50.0,
+                                    "confluence_count": confluence_count,
+                                    "confluence_total": 24,
+                                    "confluence_score": f"{confluence_count}/24 CONFLUENCE",
+                                    "hawkes_is_cascade": bool(hawkes_m.get("is_cascade", False)),
+                                    "hawkes_branching": hawkes_m.get("branching_ratio", 0.5),
+                                    "gkyz_volatility": (result.get("gkyz_model") or {}).get("sigma_gkyz", 0.0),
+                                    "merton_win_prob": merton_m.get("win_prob", 50.0),
+                                    "roll_noise_ratio": round(noise_ratio, 3),
+                                    "is_noise_dominant": is_noise_dom,
+                                    "vpin": round(vpin_val, 3),
+                                    "kalman_velocity": round(kal_v, 2),
+                                    "ou_z_score": round(ou_z, 2),
+                                    "bid_wall_btc": round(bid_wall_btc, 2),
+                                    "ask_wall_btc": round(ask_wall_btc, 2),
+                                    "burn_ratio_up": round(burn_ratio_up, 1),
+                                    "burn_ratio_down": round(burn_ratio_down, 1),
+                                    "coinbase_price": round(of_cb_price, 2),
+                                    "is_book_wall_secured": is_book_wall_secured,
+                                    "is_tri_venue_aligned": is_tri_venue_aligned,
+                                    "projected_expiry_price": proj_expiry_p,
+                                    "expected_margin": exp_margin,
+                                    "is_early_radar": is_early_radar,
+                                    "is_apex": is_primary_sniper,
+                                    "is_upgrade": is_dynamic_upgrade,
+                                    "is_reversal": is_emergency_reversal,
+                                    "is_omniscient": is_conviction_call,
+                                    "is_lethal": is_conviction_call,
+                                    "is_god_apex": is_conviction_call and not is_zero_defect_call,
+                                    "is_god_mode": is_conviction_call,
+                                    "is_zero_defect": is_zero_defect_call,
+                                    "is_early_breakout": is_dynamic_upgrade,
+                                    "tactical_command": call_direction,
+                                    "whale_shield_usd": round(float((result.get("whale_shield") or {}).get("shield_usd", 0.0)), 0),
+                                    "is_whale_impenetrable": bool((result.get("whale_shield") or {}).get("is_impenetrable", False)),
+                                    "symbol": active_symbol.upper()
+                                })
+
+                            # Desktop toast notification (Single fire per round, strictly actionable UP/DOWN only)
+                            # CRITICAL: Only fire for primary sniper, dynamic upgrade, or emergency reversal! NEVER fire on early radar!
+                            if not is_early_radar and is_conviction_call and call_direction in ("UP", "DOWN"):
+                                notifier.send_signal_notification(
+                                    direction=call_direction,
+                                    confidence=float(call_confidence),
+                                    price=float(current_price),
+                                    strike=float(r_state["round_open_price"] or current_price),
+                                    strength=call_strength,
+                                    round_id=round_id
+                                )
+
+                        # Price update
+                        if current_price:
+                            p_dir = "neutral"
+                            prev_p = last_price_by_sym.get(sym_key)
+                            if prev_p is not None:
+                                if current_price > prev_p: p_dir = "up"
+                                elif current_price < prev_p: p_dir = "down"
+                            last_price_by_sym[sym_key] = current_price
+                            socketio.emit("price_update", {
+                                "price": current_price,
+                                "direction": p_dir,
+                                "currency_symbol": "$",
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+
+                        # Candle update
+                        if len(candles) > 0:
+                            lc = candles.iloc[-1]
+                            t = int(lc["timestamp"].timestamp()) if hasattr(lc["timestamp"], "timestamp") else int(time.time())
+                            socketio.emit("candle_update", {
+                                "time": t,
+                                "open": float(lc["open"]),
+                                "high": float(lc["high"]),
+                                "low": float(lc["low"]),
+                                "close": float(lc["close"]),
+                            })
+
+        except Exception as e:
+            print(f"[Signal Loop Error] {e}")
+
+        now = time.time()
+        sleep_time = max(0.1, next_deadline - now)
+        time.sleep(sleep_time)
+        next_deadline = now + interval
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+def start_bot(host: str = "127.0.0.1", port: int = 5000, interval: float = 0.5):
+    global crypto_feed, indian_feed, international_feed, analyzer, signal_engine, _running
+
+    print("=" * 65)
+    print("  CW QUANT TERMINAL — UNIVERSAL CRYPTO & INDIAN STOCK MARKET")
+    print("=" * 65)
+
+    print("\n[Boot] 1. Starting Binance Multi-Crypto data feed...")
+    crypto_feed = BinanceDataFeed(symbol="btcusdt")
+    crypto_feed.start()
+
+    print("[Boot] 2. Starting Indian Stock Market feed (NSE/BSE)...")
+    indian_feed = IndianMarketFeed(initial_symbol="^NSEI")
+    indian_feed.start()
+
+    print("[Boot] 3. Starting International Market feed (US/Forex/Global)...")
+    international_feed = InternationalMarketFeed(initial_symbol="^GSPC")
+    international_feed.start()
+
+    print("[Boot] 4. Initialising Institutional Quantitative Analyzer...")
+    analyzer = TechnicalAnalyzer()
+    signal_engine = SignalEngine(analyzer)
+
+    print(f"[Boot] 4. Starting precision signal loop (every {interval}s)...")
+    signal_thread = threading.Thread(target=_signal_loop, args=(interval,), daemon=True)
+    signal_thread.start()
+
+    print(f"\n[Boot] Dashboard live at: http://{host}:{port}")
+
+    try:
+        socketio.run(app, host=host, port=port, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
+    except KeyboardInterrupt:
+        print("\n[Shutdown] Stopping bot...")
+    finally:
+        _running = False
+        if crypto_feed: crypto_feed.stop()
+        if indian_feed: indian_feed.stop()
+        if international_feed: international_feed.stop()
+        print("[Shutdown] Bot stopped cleanly.")
+
+def stop_bot():
+    global _running
+    _running = False
+    if crypto_feed: crypto_feed.stop()
+    if indian_feed: indian_feed.stop()

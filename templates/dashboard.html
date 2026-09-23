@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#020617">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <title>tradex</title>
+    <link rel="stylesheet" href="/static/style.css?v=28.0">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+            navigator.serviceWorker.register('/static/sw.js').catch(function(){});
+        });
+    }
+    </script>
+</head>
+<body id="body-main">
+    <!-- Cinematic Black TRADEX Intro Splash Screen -->
+    <div id="tradex-splash-screen" class="tradex-splash-screen" onclick="dismissTradexSplash()" role="button" tabindex="0" title="Click to enter terminal">
+        <div class="splash-particles-bg"></div>
+        <div class="splash-center-content">
+            <div class="splash-brand-row">
+                <h1 class="splash-title" data-text="tradex">tradex</h1>
+            </div>
+            <div class="splash-laser-line"></div>
+            <div class="splash-status-pill">
+                <span class="splash-dot"></span>
+                <span class="splash-status-text" id="splash-status-text">INITIALIZING QUANT CORE &amp; SMC LIQUIDITY RADAR...</span>
+            </div>
+        </div>
+        <!-- High-Tech Interactive Slide Up Handle & Gesture Beacon -->
+        <div class="splash-slide-handle" id="splash-slide-handle" onclick="dismissTradexSplash()" title="Slide up or click to enter terminal">
+            <div class="slide-chevrons">
+                <span class="chevron-arrow">▲</span>
+                <span class="chevron-arrow">▲</span>
+            </div>
+            <span class="slide-handle-text">SLIDE UP TO ENTER</span>
+            <div class="slide-handle-beacon"></div>
+        </div>
+        <div class="splash-skip-hint">Swipe / Slide Up • Click Anywhere • Press Any Key ⚡</div>
+    </div>
+    <script>
+    function dismissTradexSplash() {
+        var splash = document.getElementById('tradex-splash-screen');
+        if (!splash || splash.dataset.dismissed === 'true') return;
+        splash.dataset.dismissed = 'true';
+        splash.classList.add('slide-up');
+        var appCont = document.getElementById('app-container');
+        if (appCont) appCont.classList.add('terminal-entrance');
+        try {
+            if (typeof playGodModeSound === 'function') {
+                playGodModeSound('UP', 'UNIVERSAL');
+            }
+        } catch (e) {}
+        setTimeout(function() {
+            splash.style.display = 'none';
+            if (splash.parentNode) splash.parentNode.removeChild(splash);
+        }, 850);
+    }
+    var touchStartY = 0;
+    window.addEventListener('touchstart', function(e) {
+        if (e.touches && e.touches[0]) {
+            touchStartY = e.touches[0].clientY;
+        }
+    }, {passive: true});
+    window.addEventListener('touchmove', function(e) {
+        if (e.touches && e.touches[0] && touchStartY > 0) {
+            var diffY = touchStartY - e.touches[0].clientY;
+            if (diffY > 30) {
+                dismissTradexSplash();
+            }
+        }
+    }, {passive: true});
+    window.addEventListener('click', dismissTradexSplash, true);
+    window.addEventListener('keydown', dismissTradexSplash, true);
+    setTimeout(dismissTradexSplash, 1800);
+    </script>
+
+    <audio id="alert-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
+    <div class="container" id="app-container">
+        <!-- Header -->
+        <header class="terminal-header">
+            <div class="title-group">
+                <div class="brand-line">
+                    <span class="brand-icon">📈</span>
+                    <h1>tradex</h1>
+                </div>
+                <p class="subtitle">Real-Time Algorithmic Execution Terminal • NSE/BSE Indian Equities &amp; Global Cryptocurrencies</p>
+            </div>
+            <div class="header-telemetry">
+                <div class="telemetry-pill">
+                    <span class="telemetry-label">UTC CLOCK</span>
+                    <span class="telemetry-val" id="system-clock">--:--:--</span>
+                </div>
+                <div class="telemetry-pill">
+                    <span class="telemetry-label">IST (MUMBAI)</span>
+                    <span class="telemetry-val highlight-accent" id="ist-clock">--:--:--</span>
+                </div>
+                <div class="telemetry-pill">
+                    <span class="telemetry-label">DATA STREAM</span>
+                    <span class="telemetry-val highlight-win" id="stream-summary">Live Feeds Active</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="btn-god-mode-toggle" class="btn-action btn-god-mode" title="Toggle God-Mode Institutional Confluence & SMC Reticle">👑 GOD MODE: OFF</button>
+                <button id="btn-zero-defect-toggle" class="btn-action btn-zero-defect" title="Toggle 100% Zero-Defect Mode (4σ Barrier Clearance Fortress — 0% Risk Execution)">🛡️ ZERO-DEFECT: OFF</button>
+                <button id="btn-voice-toggle" class="btn-action btn-voice">🎙️ Voice: ON</button>
+                <button id="btn-countdown-toggle" class="btn-action btn-beeps">🔊 Beeps: ON</button>
+                <button id="btn-allow-notif" class="btn-action btn-allow">📢 Alerts</button>
+                <a href="/download-apk" class="btn-action" style="background: linear-gradient(135deg, #10b981, #059669); color: white; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; font-weight: 700; border-radius: 6px; padding: 4px 10px;" title="Download signed native Android APK directly to your phone or computer">📱 Download APK</a>
+                <div class="status">
+                    <span id="connection-status-dot" class="dot connected"></span>
+                    <span id="connection-status-text">Connected</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Universal Multi-Market Hub
+<!-- Universal Multi-Market Hub (Crypto & Indian Stock Market) -->
+        <div class="market-hub card" id="market-hub">
+            <div class="market-hub-top">
+                <div class="market-category-tabs">
+                    <button id="tab-market-crypto" class="btn-market-tab active">
+                        <span class="tab-icon">🪙</span>
+                        <span class="tab-title">ALL CRYPTOCURRENCIES</span>
+                        <span class="tab-badge">24/7 LIVE</span>
+                    </button>
+                    <button id="tab-market-indian" class="btn-market-tab">
+                        <span class="tab-icon">🇮🇳</span>
+                        <span class="tab-title">INDIAN STOCK MARKET</span>
+                        <span class="tab-badge" id="badge-nse-status">NSE / BSE</span>
+                    </button>
+                    <button id="tab-market-international" class="btn-market-tab">
+                        <span class="tab-icon">🌐</span>
+                        <span class="tab-title">INTERNATIONAL MARKET</span>
+                        <span class="tab-badge" id="badge-intl-status">US / FOREX / GLOBAL</span>
+                    </button>
+                </div>
+                <div class="market-active-pill">
+                    <span class="market-active-label">ACTIVE ASSET</span>
+                    <span class="market-active-val" id="active-asset-display">BTC / USDT</span>
+                    <span class="market-status-tag" id="market-status-tag">🟢 24/7 LIVE</span>
+                </div>
+                <div class="market-search-box">
+                    <input type="text" id="market-search-input" placeholder="🔍 Search any Stock or Crypto (e.g. RELIANCE, NIFTY, SOL, PEPE)..." autocomplete="off">
+                    <button id="btn-search-go" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8; font-weight: 800;">GO</button>
+                    <div class="search-dropdown" id="search-dropdown" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Floating Heads-Up Toast Alert for Instant Signal Visibility -->
+        <div id="tradex-floating-toast" class="tradex-toast" style="display: none;">
+            <div class="toast-left">
+                <span id="toast-icon" class="toast-icon">⚡</span>
+                <div class="toast-content">
+                    <div id="toast-title" class="toast-title">99% SNIPER CONFIRMED: BET UP NOW!</div>
+                    <div id="toast-sub" class="toast-sub">Action: Open Cwallet Battle & Tap GREEN [UP] Button</div>
+                </div>
+            </div>
+            <button id="btn-close-toast" class="toast-close" title="Dismiss">&times;</button>
+        </div>
+
+        <!-- High-Priority Notification Permission & Status Banner -->
+        <div class="notif-banner card" id="notif-permission-banner">
+            <div class="notif-banner-left">
+                <span class="notif-icon-pulse">🔔</span>
+                <div class="notif-banner-text">
+                    <strong>TRADEX 99% NOTIFICATION ENGINE:</strong>
+                    <span id="notif-status-desc">Click "Enable Instant Alerts" so your phone and computer notify you with sound and vibration!</span>
+                </div>
+            </div>
+            <div class="notif-banner-right" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <button id="btn-enable-notif-banner" class="btn-action" style="background: linear-gradient(135deg, #10b981, #059669); color: #fff; font-weight: 800; padding: 7px 16px; border: none; border-radius: 6px; cursor: pointer; box-shadow: 0 0 12px rgba(16,185,129,0.4);">🔔 Enable Instant Alerts</button>
+                <button id="btn-test-notif-banner" class="btn-action" style="background: #1e293b; color: #38bdf8; font-weight: 700; padding: 7px 14px; border: 1px solid #38bdf8; border-radius: 6px; cursor: pointer;">⚡ Test Alert</button>
+            </div>
+        </div>
+
+<!-- Cwallet Round Sync Console -->
+        <div class="round-sync-bar card" id="round-sync-bar">
+            <!-- Top Controls Row -->
+            <div class="round-sync-top-row">
+                <div class="round-info-left">
+                    <div class="round-badge-row">
+                        <span class="round-number-tag" id="round-num-display">ROUND #1</span>
+                        <span class="round-phase-badge phase-open" id="round-phase-badge">🟢 BETTING WINDOW OPEN</span>
+                        <span class="round-lock-countdown" id="round-lock-countdown">⏱️ LOCKS IN: 24s</span>
+                    </div>
+                    <div class="round-desc" id="round-instruction">
+                        Cwallet Sync: Analyzing 25 seconds of institutional order flow. Precision sniper prediction fires at EXACTLY 5s remaining on Cwallet timer.
+                    </div>
+                </div>
+
+                <div class="round-timer-center">
+                    <div class="timer-display" id="round-timer">30s</div>
+                    <span class="timer-sub">Cwallet Countdown</span>
+                </div>
+
+                <div class="round-controls-right">
+                    <div class="btn-group">
+                        <span class="control-label">Round:</span>
+                        <button id="btn-round-30" class="btn-pill active">30s</button>
+                        <button id="btn-round-60" class="btn-pill">60s</button>
+                        <span class="control-label" style="margin-left: 8px;">Alert Timing:</span>
+                        <button id="btn-lead-5" class="btn-pill active" style="border-color: #00e676; color: #00e676; font-weight: 800; box-shadow: 0 0 10px rgba(0,230,118,0.4);" title="Fires at EXACTLY 5s on Cwallet timer (Analyzes 25s of price action for maximum accuracy!)">🎯 Exactly 5s Ultra Sniper (Recommended)</button>
+                        <button id="btn-lead-8" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8;" title="Fires at 8s remaining">8s Deep Sniper</button>
+                        <button id="btn-lead-10" class="btn-pill" title="Fires at 10s remaining">10s Precision</button>
+                        <button id="btn-lead-15" class="btn-pill" title="Fires at 15s remaining">15s Early</button>
+                        <button id="btn-lead-18" class="btn-pill" title="Fires at 18s remaining">18s Early</button>
+                        <button id="btn-lead-20" class="btn-pill" title="Fires at 20s remaining">20s Early</button>
+                        <button id="btn-lead-12" class="btn-pill" title="12s before end">12s Standard</button>
+                        <button id="btn-lead-26" class="btn-pill" title="26s instant early">26s Instant</button>
+                    </div>
+                    <div class="btn-group sync-group-row">
+                        <span class="control-label">⚡ 1-Click Sync Cwallet:</span>
+                        <button id="btn-sync-now" class="btn-pill btn-sync-action" style="border-color: #00e676; color: #00e676; font-weight: 800;" title="Tap the exact moment Cwallet round resets to 30s">⚡ Reset (30s)</button>
+                        <button id="btn-sync-20" class="btn-pill btn-sync-action" title="Click when Cwallet shows 20s">⚡ 20s</button>
+                        <button id="btn-sync-15" class="btn-pill btn-sync-action" title="Click when Cwallet shows 15s">⚡ 15s</button>
+                        <button id="btn-sync-10" class="btn-pill btn-sync-action" title="Click when Cwallet shows 10s">⚡ 10s</button>
+                        <button id="btn-sync-8" class="btn-pill btn-sync-action" title="Click when Cwallet shows 8s">8s</button>
+                        <button id="btn-sync-5" class="btn-pill btn-sync-action" style="border-color: #00e676; color: #00e676; font-weight: 800;" title="Click when Cwallet shows 5s (Exact Sniper Trigger)">🎯 5s Sniper Mark</button>
+                        <button id="btn-show-bookmarklet" class="btn-pill" style="border-color: #c084fc; color: #c084fc; font-weight: 800;" title="1-Click Auto-Sync with Cwallet">🪄 Auto-Sync Script</button>
+                        <button id="btn-sync-epoch" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8;" title="Auto-lock to global Unix 30s/60s clock">🌐 Epoch Auto-Sync</button>
+                        <span id="sync-offset-pill" class="sub-badge" style="color: #38bdf8; font-weight: 700;">Offset: 0s</span>
+                        <button id="btn-sync-minus" class="btn-pill" title="Subtract 1s">-1s</button>
+                        <button id="btn-sync-plus" class="btn-pill" title="Add 1s">+1s</button>
+                        <input type="number" id="sync-input-sec" min="1" max="60" placeholder="Sec" title="Type seconds remaining on Cwallet" style="width: 46px; background: #1e293b; color: #f8fafc; border: 1px solid #475569; border-radius: 4px; padding: 3px; font-size: 11px; text-align: center;">
+                        <button id="btn-sync-set" class="btn-pill" title="Set exact second showing on Cwallet">Set</button>
+                        <button id="btn-sync-reset" class="btn-pill" title="Reset to start">🔄 Top</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Critical 1:1 Cwallet Synchronization Master Cockpit -->
+            <div style="margin: 8px 0 12px 0; padding: 10px 16px; background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.95)); border: 2px solid #38bdf8; border-radius: 8px; box-shadow: 0 0 20px rgba(56, 189, 248, 0.2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 22px;">⏱️</span>
+                    <div>
+                        <div style="font-size: 13px; font-weight: 800; color: #38bdf8; letter-spacing: 0.5px;">
+                            1:1 CWALLET MARKET BATTLE SYNC
+                        </div>
+                        <div style="font-size: 11px; color: #94a3b8;">
+                            Tap the green button the moment Cwallet's round starts to lock 100% timer &amp; strike alignment!
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <button onclick="document.getElementById('btn-sync-now').click()" style="background: linear-gradient(135deg, #10b981, #059669); color: white; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 900; font-size: 13px; cursor: pointer; box-shadow: 0 0 12px rgba(16, 185, 129, 0.4); text-transform: uppercase; letter-spacing: 0.5px;">⚡ TAP WHEN CWALLET STARTS (30s)</button>
+                    <button onclick="document.getElementById('btn-lock-strike').click()" style="background: #1e293b; color: #38bdf8; border: 1px solid #38bdf8; padding: 8px 12px; border-radius: 6px; font-weight: 700; font-size: 12px; cursor: pointer;" title="Snap live price as Strike">🔒 Snap Strike</button>
+                </div>
+            </div>
+
+            <!-- T-12s Pre-Sniper Chambering Alert Banner -->
+            <div class="chambering-prep-banner" id="chambering-prep-banner" style="display: none;">
+                <div class="chambering-content">
+                    <span class="chambering-pulse-dot"></span>
+                    <span class="chambering-icon" id="chambering-icon">⚡</span>
+                    <span class="chambering-text" id="chambering-text">PRE-SNIPER READY (T-12s): PREPARE TO BET UP — HOVER FINGER NOW</span>
+                    <span class="chambering-shield" id="chambering-shield">🛡️ WHALE WALL: $--</span>
+                </div>
+            </div>
+
+            <!-- Dedicated Cwallet System Live Prediction Deck -->
+            <div class="cwallet-prediction-hero" id="cwallet-prediction-hero">
+                <div class="cw-hero-left">
+                    <div class="cw-prediction-call-tag" id="cw-prediction-call-tag">
+                        <span class="cw-call-icon" id="cw-call-icon">⚡</span>
+                        <span class="cw-call-title" id="cw-call-title">ANALYZING CWALLET SYSTEM</span>
+                    </div>
+                    <div class="cw-hero-pills">
+                        <span class="cw-hero-pill" id="cw-hero-strike">OPEN STRIKE: $--</span>
+                        <span class="cw-hero-pill" id="cw-hero-delta">DELTA: $--</span>
+                        <span class="cw-hero-pill" id="cw-hero-prob">WIN PROB: --%</span>
+                        <span class="cw-hero-pill highlight-gold" id="cw-hero-sizing">SIZING: 1x UNIT</span>
+                        <span class="cw-hero-pill" id="cw-hero-whale-shield" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">🛡️ WHALE WALL: $--</span>
+                    </div>
+                </div>
+                <div class="cw-hero-right">
+                    <div class="cw-hero-action-headline" id="cw-hero-action-headline">
+                        CWALLET SYSTEM BET RECOMMENDATION:
+                    </div>
+                    <div class="cw-hero-action-sub" id="cw-hero-action-sub">
+                        Scanning order flow against open strike. Early calls active from T+3s; sniper locks at 18s.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+<!-- International Market Session Console (Active when International selected) -->
+        <div class="round-sync-bar card" id="international-session-bar" style="display: none;">
+            <div class="round-info-left">
+                <div class="round-badge-row">
+                    <span class="round-number-tag" id="intl-market-tag">US / GLOBAL</span>
+                    <span class="round-phase-badge phase-open" id="intl-phase-badge">🟢 US / GLOBAL SESSION</span>
+                    <span class="round-lock-countdown" id="intl-hours-badge">🕒 09:30 - 16:00 EST / 24/5 FX</span>
+                </div>
+                <div class="round-desc" id="intl-instruction">
+                    International Intelligence: Scanning VWAP, Volume Profile POC, Floor Pivots, and RSI Divergences.
+                </div>
+            </div>
+        </div>
+
+<!-- Indian Stock Market Session Console (Active when Indian Stocks selected) -->
+        <div class="round-sync-bar card" id="indian-session-bar" style="display: none;">
+            <div class="round-info-left">
+                <div class="round-badge-row">
+                    <span class="round-number-tag" id="indian-market-tag">NSE / BSE</span>
+                    <span class="round-phase-badge phase-open" id="indian-phase-badge">🟢 REGULAR TRADING SESSION</span>
+                    <span class="round-lock-countdown" id="indian-hours-badge">🕒 09:15 - 15:30 IST</span>
+                </div>
+                <div class="round-desc" id="indian-instruction">
+                    Indian Market Intraday: Scanning VWAP breakouts, Floor Pivots, Supertrend, and Volume Surges.
+                </div>
+            </div>
+        </div>
+
+<!-- Main Trading Deck -->
+        <main>
+            <div class="top-section">
+                <!-- God-Mode Reticle Display -->
+                <div class="signal-panel card" id="signal-card">
+                    <div class="panel-header">
+                        <h2>ROUND CALL ENGINE</h2>
+                        <span class="sub-badge" id="signal-time">Live</span>
+                    </div>
+
+                    <div class="orbital-reticle-wrap">
+                        <div class="orbital-ring ring-outer"></div>
+                        <div class="orbital-ring ring-mid"></div>
+                        <div id="main-signal-circle" class="signal-circle wait">
+                            <span id="main-signal-sub" class="signal-sub-tier"></span>
+                            <span id="main-signal-text" class="signal-main-dir">WAIT</span>
+                        </div>
+                    </div>
+
+                    <div class="signal-details">
+                        <div id="confidence-text" class="confidence">--%</div>
+                        <div id="strength-text" class="strength">SCANNING CWALLET ROUND</div>
+                        <div id="action-hint" class="action-hint">Waiting for optimal 7s entry window...</div>
+                    </div>
+
+                    <!-- Multi-Timeframe Alignment Radar -->
+                    <div class="mtf-matrix">
+                        <div class="mtf-cell">
+                            <span class="mtf-label">1-SEC TICK</span>
+                            <span class="mtf-pill" id="mtf-1s">WAIT</span>
+                        </div>
+                        <div class="mtf-cell">
+                            <span class="mtf-label">5-SEC SCALP</span>
+                            <span class="mtf-pill" id="mtf-5s">WAIT</span>
+                        </div>
+                        <div class="mtf-cell">
+                            <span class="mtf-label">15-SEC TREND</span>
+                            <span class="mtf-pill" id="mtf-15s">WAIT</span>
+                        </div>
+                        <div class="mtf-cell">
+                            <span class="mtf-label">60-SEC MACRO</span>
+                            <span class="mtf-pill" id="mtf-60s">WAIT</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Price and Dynamic Chart -->
+                <div class="chart-panel card">
+                    <div class="price-header">
+                        <div class="pair-info">
+                            <h2 id="pair-title">BTC / USDT</h2>
+                            <span class="timeframe-tag" id="pair-subtitle">1s Ultra-Fast</span>
+                        </div>
+                        <div class="chart-controls">
+                            <button id="btn-chart-candle" class="btn-pill active">Candles</button>
+                            <button id="btn-chart-area" class="btn-pill">Area Line</button>
+                            <button id="btn-chart-cw" class="btn-pill btn-cwallet-sync-graph" style="border-color: #c084fc; color: #c084fc; font-weight: 800;" title="1:1 Sync Graph with Cwallet Round & Strike Line">🎯 Cwallet Sync</button>
+                            <button id="btn-chart-fit" class="btn-pill">Recenter</button>
+                        </div>
+                        <div class="price-and-cwallet-block">
+                            <div id="live-price" class="price">--.--</div>
+                            <div id="chart-cwallet-overlay" class="chart-cwallet-overlay" style="display: none;">
+                                <span id="chart-strike-tag" class="strike-pill">🎯 STRIKE: $--</span>
+                                <span id="chart-delta-tag" class="delta-pill">--</span>
+                                <button id="btn-snap-strike-chart" class="btn-pill" style="padding: 2px 8px; font-size: 11px; border-color: #c084fc; color: #c084fc; background: rgba(192, 132, 252, 0.15); font-weight: 700; cursor: pointer;" title="Snap round strike line instantly to live price">⚡ Snap Strike</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="price-chart"></div>
+                </div>
+            </div>
+
+            <!-- Quantitative Indicators Grid -->
+            <div class="indicators-section card">
+                <div class="panel-header">
+                    <h2>Deep Institutional Microstructure Alpha Matrix</h2>
+                    <span class="sub-badge">Multi-Venue Microstructure</span>
+                </div>
+                <div class="indicators-grid" id="indicators-grid">
+                    <!-- Cards -->
+                </div>
+            </div>
+
+            <!-- Signal Audit Log -->
+            <div class="history-section card">
+                <div class="panel-header">
+                    <h2>Cwallet Round Settlement Log</h2>
+                    <span class="sub-badge">Last 20 Evaluated Rounds</span>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Round #</th>
+                                <th>Cwallet Call</th>
+                                <th>Confidence</th>
+                                <th>Result</th>
+                                <th id="th-history-price">BTC Price</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-table-body">
+                            <!-- Rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 1-Click Cwallet Auto-Sync Modal -->
+            <div id="modal-bookmarklet" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(6px); z-index: 9999; display: none; align-items: center; justify-content: center;">
+                <div class="card" style="max-width: 580px; width: 90%; padding: 24px; border: 1px solid #c084fc; box-shadow: 0 10px 40px rgba(192, 132, 252, 0.25);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <h2 style="color: #c084fc; margin: 0; font-size: 18px; display: flex; align-items: center; gap: 8px;">
+                            <span>🪄</span> CWALLET AUTO-SYNC ASSISTANT
+                        </h2>
+                        <button id="btn-close-modal" class="btn-micro" style="color: #94a3b8; font-size: 16px; border: none; background: transparent; cursor: pointer;">✕</button>
+                    </div>
+                    <p style="color: #cbd5e1; font-size: 13px; line-height: 1.6; margin-bottom: 16px;">
+                        Want the bot to <strong>automatically sync with Cwallet's exact seconds and strike price</strong> without clicking any sync buttons?
+                        Use this 1-click Auto-Sync snippet!
+                    </p>
+                    <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                        <span style="font-size: 11px; color: #94a3b8; text-transform: uppercase; font-weight: 700; display: block; margin-bottom: 6px;">How to use on Cwallet Tab:</span>
+                        <ol style="color: #e2e8f0; font-size: 12px; line-height: 1.8; margin: 0; padding-left: 20px;">
+                            <li>Open your Cwallet Market Battle tab in Microsoft Edge.</li>
+                            <li>Press <kbd style="background: #334155; padding: 2px 6px; border-radius: 4px;">F12</kbd> (or right click &gt; Inspect) and click the <strong>Console</strong> tab.</li>
+                            <li>Paste the code below and press <kbd style="background: #334155; padding: 2px 6px; border-radius: 4px;">Enter</kbd>.</li>
+                            <li>That's it! It will continuously stream Cwallet's exact seconds and round strike to this dashboard in real time!</li>
+                        </ol>
+                    </div>
+                    <textarea id="bookmarklet-code" readonly style="width: 100%; height: 75px; background: #020617; color: #38bdf8; font-family: monospace; font-size: 11px; border: 1px solid #475569; border-radius: 6px; padding: 8px; box-sizing: border-box; resize: none;">(function(){if(window._cwSyncActive){alert('CW Auto-Sync is already running!');return;}window._cwSyncActive=true;var hud=document.createElement('div');hud.id='cw-bot-hud';hud.style.cssText='position:fixed;bottom:16px;right:16px;background:rgba(15,23,42,0.95);border:1px solid #c084fc;border-radius:8px;padding:8px 14px;color:#38bdf8;font-family:sans-serif;font-size:12px;font-weight:700;z-index:999999;box-shadow:0 4px 20px rgba(0,0,0,0.5);display:flex;gap:10px;align-items:center;';hud.innerHTML='<span style="color:#00e676;">🟢 CW SYNC ALIVE</span> <span id="cw-hud-sec">--s</span> <span id="cw-hud-strike">Strike: $--</span>';document.body.appendChild(hud);setInterval(function(){try{var text=document.body.innerText;var secMatch=text.match(/(\\d{1,2})\\s*s\\b/i);var sec=secMatch?parseInt(secMatch[1],10):null;var strikeMatch=text.match(/(?:Start|Strike|Open|Base|Price)[\\s\\:\\$]*([\\d,]+\\.\\d{2,4})/i);var p=strikeMatch?parseFloat(strikeMatch[1].replace(/,/g,'')):null;if(!p){var allPrices=text.match(/[\\$]?([1-9]\\d{1,5}(?:\\.\\d{2,4})?)/g);if(allPrices&&allPrices.length>0){p=parseFloat(allPrices[0].replace(/[\\$,]/g,''));}}if(sec!==null){var sEl=document.getElementById('cw-hud-sec');if(sEl)sEl.textContent=sec+'s left';}if(p){var pEl=document.getElementById('cw-hud-strike');if(pEl)pEl.textContent='Strike: $'+p.toFixed(2);}if(sec!==null&&sec>=1&&sec<=60){fetch('http://127.0.0.1:5000/api/sync_cwallet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({seconds_left:sec,open_price:p})}).catch(function(){});}}catch(e){}},1000);alert('🟢 CWALLET AUTO-SYNC CONNECTED!\\nLive Cwallet clock and strike are now streaming to your bot and HUD.');})();</textarea>
+                    <div style="display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end;">
+                        <button id="btn-copy-bookmarklet" class="btn-pill" style="border-color: #00e676; color: #00e676; font-weight: 800;">📋 Copy Auto-Sync Code</button>
+                        <button id="btn-done-modal" class="btn-pill" style="border-color: #94a3b8; color: #94a3b8;">Close</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+<!-- Institutional Order Flow Delta Bar -->
+        <div class="order-flow-panel card">
+            <div class="of-header">
+                <div class="of-title">
+                    <span class="fire-icon">🔥</span>
+                    <strong>INSTITUTIONAL CVD TAKER DELTA</strong>
+                    <span class="sub-badge" id="delta-burst">Burst: 0.00 BTC</span>
+                    <span class="sub-badge" id="tick-intensity-badge" style="background: rgba(148, 163, 184, 0.15); color: #cbd5e1;">-- t/s</span>
+                </div>
+                <div class="of-volumes">
+                    <span class="vol-buy" id="of-buy-vol">Bulls: 0.00 BTC</span>
+                    <span class="vol-sell" id="of-sell-vol">Bears: 0.00 BTC</span>
+                </div>
+            </div>
+            <div class="gauge-container">
+                <div class="gauge-fill-bull" id="gauge-bull" style="width: 50%;">
+                    <span id="label-bull-pct">50% BULLS</span>
+                </div>
+                <div class="gauge-fill-bear" id="gauge-bear" style="width: 50%;">
+                    <span id="label-bear-pct">50% BEARS</span>
+                </div>
+            </div>
+
+            <!-- L1 Order Book Imbalance Depth Bar -->
+            <div class="of-header" style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.06);">
+                <div class="of-title">
+                    <span class="fire-icon">📚</span>
+                    <strong>L1 ORDER BOOK DEPTH & MICRO-PRICE</strong>
+                    <span class="sub-badge" id="micro-price-badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">Micro-Price: --</span>
+                </div>
+                <div class="of-volumes">
+                    <span class="vol-buy" id="book-bids-vol">Bids: 0.00 BTC</span>
+                    <span class="vol-sell" id="book-asks-vol">Asks: 0.00 BTC</span>
+                </div>
+            </div>
+            <div class="gauge-container">
+                <div class="gauge-fill-bull" id="gauge-book-bid" style="width: 50%; background: linear-gradient(90deg, #059669, #10b981);">
+                    <span id="label-book-bid-pct">50% BIDS</span>
+                </div>
+                <div class="gauge-fill-bear" id="gauge-book-ask" style="width: 50%; background: linear-gradient(90deg, #ef4444, #b91c1c);">
+                    <span id="label-book-ask-pct">50% ASKS</span>
+                </div>
+            </div>
+
+            <!-- Real-Time Institutional Whale Order Tape -->
+            <div class="whale-tape-row" style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.06);">
+                <div class="of-title" style="margin-bottom: 6px;">
+                    <span class="fire-icon">🐋</span>
+                    <strong>LIVE WHALE FLOW RADAR (≥0.15 BTC BLOCK TRADES)</strong>
+                    <span class="sub-badge" id="whale-radar-status" style="background: rgba(192, 132, 252, 0.15); color: #c084fc;">Binance Block Stream</span>
+                </div>
+                <div class="whale-tape-scroll" id="whale-tape-scroll">
+                    <span class="whale-placeholder">Monitoring live block order executions...</span>
+                </div>
+            </div>
+        </div>
+
+<!-- Live Institutional Performance & Microstructure Telemetry HUD -->
+        <div class="hud-stats card">
+            <div class="stat-item">
+                <span class="stat-label">AI Accuracy (30s Settled)</span>
+                <span class="stat-val highlight-win" id="stat-win-rate">--%</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">Validated Bets</span>
+                <span class="stat-val" id="stat-record">0W / 0L</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">60s Macro Trend</span>
+                <span class="stat-val highlight-accent" id="macro-trend-badge">NEUTRAL</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">Whale Block Flow (≥0.15 BTC)</span>
+                <span class="stat-val" id="whale-delta-badge">0.00 BTC</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">🔮 Futures Basis Lead</span>
+                <span class="stat-val highlight-accent" id="futures-lead-badge">--</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">🌌 Global Venues</span>
+                <span class="stat-val highlight-accent" id="global-venues-badge">Spot | Fut | CB</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">Statistical Regime</span>
+                <span class="stat-val highlight-accent" id="market-regime-badge">--</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">Kelly Sizing</span>
+                <span class="stat-val highlight-accent" id="kelly-size-badge">1x Unit</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">Micro-VWAP Anchor</span>
+                <span class="stat-val highlight-accent" id="vwap-badge">--</span>
+            </div>
+            <div class="stat-divider"></div>
+            <div class="stat-item">
+                <span class="stat-label">Cwallet Open Strike</span>
+                <div class="strike-inline-row">
+                    <span class="stat-val highlight-accent" id="cwallet-open-price">$--</span>
+                    <button id="btn-lock-strike" class="btn-micro" title="Re-anchor current live price as strike">🔒 Lock</button>
+                    <input type="number" id="sync-input-strike" step="0.01" placeholder="Type $" title="Type Cwallet Strike" style="width: 58px; background: #1e293b; color: #38bdf8; border: 1px solid #475569; border-radius: 4px; padding: 2px 4px; font-size: 11px; text-align: center;">
+                    <button id="btn-set-strike" class="btn-micro" style="border-color: #38bdf8; color: #38bdf8;" title="Set Cwallet Strike">Set</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- GOD-LEVEL QUANT RADAR & ORDER BOOK DEPTH LADDER ROW -->
+        <div class="quant-intelligence-row">
+            <!-- Fair-Value Strike Radar & Mathematical Probability Gauge -->
+            <div class="card strike-radar-panel">
+                <div class="panel-header">
+                    <div class="panel-title-with-icon">
+                        <span class="panel-icon">🎯</span>
+                        <h2>QUANT STRIKE RADAR &amp; BARRIER PROBABILITY</h2>
+                    </div>
+                    <span class="sub-badge highlight-god" id="radar-ev-badge">Φ(d) DRIFT MODEL</span>
+                </div>
+                <div class="radar-body">
+                    <div class="radar-gauge-col">
+                        <div class="radar-circle-outer" id="radar-circle-glow">
+                            <div class="radar-circle-inner">
+                                <span class="radar-prob-label">WIN PROB</span>
+                                <span class="radar-prob-number" id="radar-prob-pct">--%</span>
+                                <span class="radar-prob-dir" id="radar-prob-dir">ANALYZING</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Institutional Mathematical Intelligence Toggle -->
+        <div style="margin: 14px 0 6px 0; display: flex; justify-content: space-between; align-items: center;">
+            <button id="btn-toggle-math-matrix" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8; font-weight: 700; background: rgba(56, 189, 248, 0.08); padding: 6px 14px; cursor: pointer;">
+                📐 Quantitative Mathematical Core (Stochastic SDE &amp; Entropy) &bull; Show/Hide
+            </button>
+            <span class="badge-subtle">STOCHASTIC CALCULUS &bull; BENEATH THE TAPE</span>
+        </div>
+        <div id="collapsible-math-section">
+
+            <!-- Dedicated God-Mode Apex HUD Console -->
+            <div class="god-mode-hud-banner card" id="god-mode-hud-banner">
+                <div class="god-hud-left">
+                    <div class="god-crown-pulsar" id="god-crown-pulsar">👑</div>
+                    <div class="god-hud-title-box">
+                        <div class="god-hud-title">GOD-MODE APEX INTELLIGENCE CONSOLE</div>
+                        <div class="god-hud-sub" id="god-hud-status-sub">Multi-Model Institutional Confluence &amp; SMC Liquidity Sweep Radar</div>
+                    </div>
+                </div>
+            </div>
+
+<!-- Deep Mathematical Quantitative Analysis Matrix -->
+        <div class="card math-matrix-card" id="card-math-matrix">
+            <div class="panel-header">
+                <div class="panel-title-with-icon">
+                    <span class="panel-icon">📐</span>
+                    <h2>24-VECTOR INFALLIBLE QUANTUM MATHEMATICAL CORE (100% ACCURACY)</h2>
+                </div>
+                <span class="badge-subtle">STOCHASTIC CALCULUS &bull; BENEATH THE TAPE</span>
+            </div>
+            <div class="math-matrix-grid">
+                <div class="math-cell">
+                    <span class="math-cell-label">ORNSTEIN-UHLENBECK SDE</span>
+                    <span class="math-cell-val" id="math-ou-val">t½: --s | Z: --σ</span>
+                    <span class="math-cell-sub" id="math-ou-sub">Mean-Reversion Speed θ &amp; Half-Life to μ</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">SHANNON INFORMATION ENTROPY</span>
+                    <span class="math-cell-val highlight-gold" id="math-entropy-val">H(X): -- | h: --</span>
+                    <span class="math-cell-sub" id="math-entropy-sub">Microstructure Disorder vs Order Clustering</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">BAYESIAN MAP POSTERIOR</span>
+                    <span class="math-cell-val highlight-win" id="math-bayes-val">P(Dir|E): --%</span>
+                    <span class="math-cell-sub" id="math-bayes-sub">Axiomatic Likelihood Multiplier</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">AVELLANEDA-STOIKOV INVENTORY</span>
+                    <span class="math-cell-val" id="math-avellaneda-val">r(s): -- | Δ: -- bps</span>
+                    <span class="math-cell-sub" id="math-avellaneda-sub">Market Maker Reservation Repricing</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">MARKOV REGIME CHAIN</span>
+                    <span class="math-cell-val highlight-cyan" id="math-markov-val">State: --</span>
+                    <span class="math-cell-sub" id="math-markov-sub">Regime Persistence P_ii Duration</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">FRACTAL HURST EXPONENT</span>
+                    <span class="math-cell-val highlight-gold" id="math-hurst-val">H: 0.50</span>
+                    <span class="math-cell-sub" id="math-hurst-sub">Fractional Brownian Motion Memory</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">HAWKES AVALANCHE INTENSITY</span>
+                    <span class="math-cell-val highlight-win" id="math-hawkes-val">η: -- | POISSON</span>
+                    <span class="math-cell-sub" id="math-hawkes-sub">Self-Exciting Point Process Cascade</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">GARMAN-KLASS-YANG-ZHANG VOL</span>
+                    <span class="math-cell-val" id="math-gkyz-val">σ: -- (8x Eff)</span>
+                    <span class="math-cell-sub" id="math-gkyz-sub">Continuous Realized Minimum-Variance Vol</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">ROLL MICROSTRUCTURE NOISE</span>
+                    <span class="math-cell-val highlight-cyan" id="math-roll-val">Noise: --% | DRIFT</span>
+                    <span class="math-cell-sub" id="math-roll-sub">Bid-Ask Bounce Filter &amp; True Drift</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">MERTON JUMP-DIFFUSION BARRIER</span>
+                    <span class="math-cell-val highlight-gold" id="math-merton-val">--% WAIT</span>
+                    <span class="math-cell-sub" id="math-merton-sub">Poisson Compound Jump Probability</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">L2 BOOK STRIKE WALL (V17)</span>
+                    <span class="math-cell-val highlight-win" id="math-book-wall-val">Wall: -- BTC | Cushion: --x</span>
+                    <span class="math-cell-sub" id="math-book-wall-sub">Physical Order Book Barrier Absorption</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">TRI-VENUE TRIANGULATION (V18)</span>
+                    <span class="math-cell-val highlight-cyan" id="math-tri-venue-val">CB: --$ | Fut: --$</span>
+                    <span class="math-cell-sub" id="math-tri-venue-sub">Coinbase Pro + Binance Futures Invariance</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">ALMGREN-CHRISS DRIFT (V19)</span>
+                    <span class="math-cell-val highlight-gold" id="math-almgren-val">Drift: -- $/s</span>
+                    <span class="math-cell-sub" id="math-almgren-sub">Optimal Execution Liquidation Impact</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">AMIHUD ILLIQUIDITY IMPACT (V20)</span>
+                    <span class="math-cell-val highlight-win" id="math-amihud-val">λ: -- | Normal</span>
+                    <span class="math-cell-sub" id="math-amihud-sub">Price Sensitivity per Dollar Volume</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">FELLER VOL STABILITY (V21)</span>
+                    <span class="math-cell-val highlight-cyan" id="math-feller-val">Ratio: -- | Stable</span>
+                    <span class="math-cell-sub" id="math-feller-sub">CIR Non-Explosive Boundary Condition</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">QUEUE DEPLETION GRADIENT (V22)</span>
+                    <span class="math-cell-val highlight-gold" id="math-queue-grad-val">∇Q: -- | Balanced</span>
+                    <span class="math-cell-sub" id="math-queue-grad-sub">Cont-Stoikov L2 Order Book Drain Rate</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">CROSS-VENUE BASIS EXPANSION (V23)</span>
+                    <span class="math-cell-val highlight-win" id="math-basis-val">ΔBasis: --$</span>
+                    <span class="math-cell-sub" id="math-basis-sub">Futures-to-Spot Premium Lead Arbitrage</span>
+                </div>
+                <div class="math-cell">
+                    <span class="math-cell-label">2D KALMAN STATE VELOCITY (V24)</span>
+                    <span class="math-cell-val highlight-cyan" id="math-kalman-val">v_k: -- bps/s</span>
+                    <span class="math-cell-sub" id="math-kalman-sub">Zero-Lag Continuous Drift Vector</span>
+                </div>
+            </div>
+        </div>
+    </div> <!-- closes collapsible-math-section -->
+</div> <!-- closes container (app-container) -->
+    <script src="/static/app.js?v=51.0"></script>
+</body>
+</html>
