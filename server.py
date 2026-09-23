@@ -34,7 +34,7 @@ indian_feed: IndianMarketFeed | None = None
 international_feed: InternationalMarketFeed | None = None
 analyzer: TechnicalAnalyzer | None = None
 signal_engine: SignalEngine | None = None
-round_manager: RoundManager = RoundManager(round_duration=30, lead_time=5.0)
+round_manager: RoundManager = RoundManager(round_duration=20, lead_time=5.0)
 _running = False
 
 active_market_type: str = "crypto"  # "crypto" or "indian"
@@ -348,6 +348,28 @@ def api_cwallet_state():
     curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
     return round_manager.get_state(curr_p)
 
+@app.route("/api/settle_round", methods=["POST"])
+def api_settle_round():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        strike = float(data.get("strike", 0.0))
+        close_price = float(data.get("close_price", 0.0))
+        round_id = data.get("round_id", round_manager.last_round_id)
+        res = round_manager.settle_round(strike=strike, close_price=close_price)
+        last_pred = round_manager.get_last_sniper_direction(round_id)
+        won = (last_pred == res["outcome"]) if last_pred in ("UP", "DOWN") else (res["outcome"] == "UP")
+        settled_payload = {
+            "round_id": round_id,
+            "strike": res["strike"],
+            "close_price": res["close_price"],
+            "outcome": res["outcome"],
+            "won": won
+        }
+        socketio.emit("cwallet_round_settled", settled_payload)
+        return {"status": "ok", "settlement": settled_payload}
+    except Exception as e:
+        return {"error": str(e)}, 400
+
 @app.route("/api/toggle_zero_defect", methods=["GET", "POST"])
 def api_toggle_zero_defect():
     global zero_defect_mode
@@ -449,6 +471,29 @@ def handle_lock_strike(data):
                 round_manager.lock_strike(float(p))
                 curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
                 socketio.emit("cwallet_round_update", round_manager.tick(curr_p))
+        except Exception:
+            pass
+
+@socketio.on("settle_round")
+def handle_settle_round(data):
+    if isinstance(data, dict):
+        try:
+            strike = float(data.get("strike", 0.0))
+            close_price = float(data.get("close_price", 0.0))
+            round_id = data.get("round_id", round_manager.last_round_id)
+            res = round_manager.settle_round(strike=strike, close_price=close_price)
+            last_pred = round_manager.get_last_sniper_direction(round_id)
+            won = (last_pred == res["outcome"]) if last_pred in ("UP", "DOWN") else (res["outcome"] == "UP")
+            settled_payload = {
+                "round_id": round_id,
+                "strike": res["strike"],
+                "close_price": res["close_price"],
+                "outcome": res["outcome"],
+                "won": won
+            }
+            socketio.emit("cwallet_round_settled", settled_payload)
+            curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+            socketio.emit("cwallet_round_update", round_manager.get_state(curr_p))
         except Exception:
             pass
 
@@ -577,6 +622,26 @@ def _signal_loop(interval: float = 1.0):
                     r_state = round_manager.tick(current_price)
                     socketio.emit("cwallet_round_update", r_state)
 
+                    if r_state.get("just_settled"):
+                        s_round_id = r_state.get("settled_round_id")
+                        s_strike = r_state.get("settled_strike")
+                        s_close = r_state.get("settled_close")
+                        s_outcome = r_state.get("settled_outcome")
+                        last_pred = round_manager.get_last_sniper_direction(s_round_id)
+                        if last_pred in ("UP", "DOWN"):
+                            s_won = (last_pred == s_outcome)
+                        else:
+                            s_won = (s_outcome == "UP") if (s_strike is not None and s_close is not None and s_close != s_strike) else False
+
+                        settled_payload = {
+                            "round_id": s_round_id,
+                            "strike": s_strike,
+                            "close_price": s_close,
+                            "outcome": s_outcome,
+                            "won": s_won
+                        }
+                        socketio.emit("cwallet_round_settled", settled_payload)
+
                     candles = crypto_feed.get_candles()
                     if candles is not None and len(candles) >= 8:
                         order_flow = crypto_feed.get_order_flow()
@@ -604,15 +669,16 @@ def _signal_loop(interval: float = 1.0):
                         secs_left = r_state["seconds_left"]
                         target_lead = int(round_manager.lead_time)
                         open_strike = r_state.get("round_open_price") or 0.0
-                        round_dur = int(r_state.get("round_duration", 30))
+                        round_dur = int(r_state.get("round_duration", 20))
 
                         is_early_radar = False
                         is_primary_sniper = False
                         is_dynamic_upgrade = False
                         is_emergency_reversal = False
 
-                        # Trigger 1.5: Stage 1.5 Pre-Sniper Chambering Alert (T-8s to T-6s in 30s round, T-15s to T-12s in 60s round)
-                        chamber_window = (secs_left <= 8 and secs_left >= 6) if round_dur == 30 else (secs_left <= 15 and secs_left >= 12)
+                        # Trigger 1.5: Stage 1.5 Pre-Sniper Chambering Alert (T-8s to T-6s in 20s/30s round)
+                        phase_secs = r_state.get("phase_seconds_left", secs_left)
+                        chamber_window = (r_state.get("phase") == "BETTING" and phase_secs <= 8 and phase_secs >= 6) if round_dur == 20 else ((secs_left <= 8 and secs_left >= 6) if round_dur == 30 else (secs_left <= 15 and secs_left >= 12))
                         chambering_already_fired = (r_state.get("chambering_fired_for_round", -1) == round_id)
                         if not chambering_already_fired and chamber_window and open_strike > 0:
                             strike_diff_cb = current_price - open_strike
@@ -641,281 +707,52 @@ def _signal_loop(interval: float = 1.0):
                                     "whale_shield_usd": round(shield_val, 0)
                                 })
 
-                        # Trigger 2: Stage 2 Primary Quantum Apex Sniper (Fires at EXACTLY target_lead e.g. 5s)
+                        # Trigger 2: Stage 2 Primary Quantum Apex Sniper (Fires at EXACTLY T-5s of betting window)
                         # IMMUTABLE SINGLE PREDICTION: Fires strictly once at T-5s and never changes mid-round
-                        if not sniper_already_fired and secs_left <= target_lead and secs_left >= 3:
-                            if open_strike > 0:
+                        if not sniper_already_fired and r_state.get("is_sniper_window", False):
+                            if open_strike > 0 or current_price > 0:
                                 is_primary_sniper = True
-                                strike_diff = current_price - open_strike
+                                strike_diff = current_price - (open_strike or current_price)
 
                         is_early_sniper = is_primary_sniper
 
                         if is_early_sniper:
-                            # Institutional Microstructure Confluence Assessment
+                            # Unified Institutional Microstructure Confluence from signal_engine
+                            call_direction = result.get("direction", "PASS")
+                            if call_direction == "WAIT":
+                                call_direction = "PASS"
+                            call_confidence = float(result.get("confidence", 50.0))
+                            call_strength = result.get("strength", "🛡️ CAPITAL SHIELD: CHOP NOISE PASS (0x UNIT)")
+                            call_kelly = result.get("kelly_unit", "0x (PASS)")
+                            confluence_count = int(result.get("confluence_count", 0))
+                            is_conviction_call = (call_direction in ("UP", "DOWN") and call_confidence >= 75.0)
+                            is_zero_defect_call = bool(result.get("is_zero_defect", False))
+
                             math_models = result.get("math_models", {})
                             roll_m = math_models.get("roll_noise", {})
                             hawkes_m = math_models.get("hawkes_process", {})
                             merton_m = math_models.get("merton_jump", {})
                             kalman_m = math_models.get("kalman_velocity", {})
-                            entropy_m = math_models.get("shannon_entropy", {})
                             ou_m = math_models.get("ornstein_uhlenbeck", {})
-                            amihud_m = math_models.get("amihud_illiq", {})
-                            bayes_m = math_models.get("bayesian_map", {})
-                            avell_m = math_models.get("avellaneda_stoikov", {})
-                            kyle_m = result.get("kyle_model", {})
-                            markov_m = math_models.get("markov_regime", {})
-                            gkyz_m = result.get("gkyz_model") or math_models.get("gkyz_volatility", {})
                             book_wall_m = result.get("book_wall_model") or math_models.get("book_wall_absorption", {})
                             tri_venue_m = result.get("tri_venue_model") or math_models.get("tri_venue_triangulation", {})
-                            almgren_m = result.get("almgren_model") or math_models.get("almgren_chriss", {})
-                            feller_m = result.get("feller_model") or math_models.get("feller_stability", {})
-                            q_grad_m = result.get("queue_gradient_model") or math_models.get("queue_gradient", {})
-                            basis_m = result.get("basis_expansion_model") or math_models.get("basis_expansion", {})
+                            barrier_m = result.get("barrier_model", {})
 
-                            model_dir = result.get("direction", "WAIT")
-                            confluence_count = result.get("confluence_count", 0)
-
-                            # 24 Institutional Vectors
                             noise_ratio = float(roll_m.get("noise_ratio", 0.0))
                             is_noise_dom = bool(roll_m.get("is_noise_dominant", False)) or (noise_ratio >= 0.50)
-
-                            merton_p_up = float(merton_m.get("prob_up", 0.50))
-                            merton_p_down = float(merton_m.get("prob_down", 0.50))
-                            merton_win_prob = float(merton_m.get("win_prob", 50.0))
-
-                            hawkes_eta = float(hawkes_m.get("branching_ratio", 0.50))
-                            hawkes_is_cascade = bool(hawkes_m.get("is_cascade", False))
-                            hawkes_sig = int(hawkes_m.get("signal", 0))
-
                             vpin_val = float(order_flow.get("vpin", 0.0)) if order_flow else 0.0
-                            taker_buy_pct = float(order_flow.get("taker_buy_pct_5s", 50.0)) if order_flow else 50.0
-
                             kal_v = float(kalman_m.get("velocity_bps", 0.0))
                             ou_z = float(ou_m.get("z_score", 0.0))
-                            ou_half_life = float(ou_m.get("half_life", 999.0))
-                            norm_entropy = float(entropy_m.get("norm_entropy", 1.0))
-                            kyle_lam = float(kyle_m.get("kyle_lambda", 0.0))
-                            p_bull = float(bayes_m.get("p_bull", 0.50))
-                            p_bear = float(bayes_m.get("p_bear", 0.50))
-                            markov_st = markov_m.get("current_state", "CHOP")
-                            markov_p = float(markov_m.get("persistence_prob", 0.50))
-                            avell_skew = float(avell_m.get("skew_bps", 0.0))
-                            sigma_gkyz = float(gkyz_m.get("sigma_gkyz", 0.0))
-
-                            is_book_wall_secured = bool(book_wall_m.get("is_wall_secured", False))
-                            burn_ratio_up = float(book_wall_m.get("burn_ratio_up", 1.0))
-                            burn_ratio_down = float(book_wall_m.get("burn_ratio_down", 1.0))
                             bid_wall_btc = float(book_wall_m.get("bid_wall_btc", 0.0))
                             ask_wall_btc = float(book_wall_m.get("ask_wall_btc", 0.0))
-
+                            burn_ratio_up = float(book_wall_m.get("burn_ratio_up", 1.0))
+                            burn_ratio_down = float(book_wall_m.get("burn_ratio_down", 1.0))
+                            is_book_wall_secured = bool(book_wall_m.get("is_wall_secured", False))
                             is_tri_venue_aligned = bool(tri_venue_m.get("is_aligned", False))
                             of_cb_price = float(order_flow.get("coinbase_price", current_price)) if order_flow else current_price
-                            of_cb_change = float(order_flow.get("coinbase_change_5s", 0.0)) if order_flow else 0.0
-
-                            # Vectors 19 - 24 parameters
-                            ac_drift = float(almgren_m.get("drift", 0.0))
-                            feller_is_stable = bool(feller_m.get("is_stable", True))
-                            feller_ratio = float(feller_m.get("feller_ratio", 1.5))
-                            q_grad = float(q_grad_m.get("gradient", 0.0))
-                            basis_d = float(basis_m.get("basis_delta", 0.0))
-                            hurst_m = result.get("hurst_model", {})
-                            hurst_h = float(hurst_m.get("hurst", 0.50))
-                            amihud_sc = float(amihud_m.get("score", 0.0))
-
-                            barrier_m = result.get("barrier_model", {})
                             exp_margin = float(barrier_m.get("expected_margin", strike_diff))
                             proj_expiry_p = float(barrier_m.get("projected_expiry_price", current_price))
-                            win_prob = float(result.get("confidence", 97.0))
 
-                            # In-round microstructure vectors
-                            recent_mom = float(r_state.get("recent_momentum", 0.0))
-                            in_round_vwap = float(r_state.get("in_round_vwap", current_price))
-                            r_range_pct = float(r_state.get("range_pct", 0.50))
-                            r_vel = float(r_state.get("round_velocity", 0.0))
-
-                            # Order flow & cross-venue vectors
-                            of_delta_5s = float(order_flow.get("delta_5s", 0.0)) if order_flow else 0.0
-                            of_fut_price = float(order_flow.get("futures_price", current_price)) if order_flow else current_price
-                            of_vel_3s = float(order_flow.get("price_velocity_3s", recent_mom)) if order_flow else recent_mom
-                            of_consensus = float(order_flow.get("global_consensus", 0.0)) if order_flow else 0.0
-                            of_micro_price = float(order_flow.get("micro_price", current_price)) if order_flow else current_price
-                            of_whale_delta = float(order_flow.get("whale_delta", 0.0)) if order_flow else 0.0
-                            of_basis_delta = float(order_flow.get("basis_delta_5s", 0.0)) if order_flow else 0.0
-
-                            # True Volatility-Calibrated Strike Clearance (avoids coin-flip bets in 5s Brownian motion)
-                            if zero_defect_mode:
-                                if current_price >= 10000:
-                                    clearance_threshold = max(14.0, current_price * 0.00016)
-                                elif current_price >= 1000:
-                                    clearance_threshold = max(0.40, current_price * 0.00016)
-                                elif current_price >= 100:
-                                    clearance_threshold = max(0.04, current_price * 0.00018)
-                                elif current_price >= 1:
-                                    clearance_threshold = max(0.004, current_price * 0.00020)
-                                else:
-                                    clearance_threshold = max(0.00004, current_price * 0.00025)
-                            else:
-                                if current_price >= 10000:
-                                    clearance_threshold = max(7.0, current_price * 0.00008)
-                                elif current_price >= 1000:
-                                    clearance_threshold = max(0.20, current_price * 0.00008)
-                                elif current_price >= 100:
-                                    clearance_threshold = max(0.02, current_price * 0.00010)
-                                elif current_price >= 1:
-                                    clearance_threshold = max(0.002, current_price * 0.00012)
-                                else:
-                                    clearance_threshold = max(0.00002, current_price * 0.00015)
-
-                            # Dynamic micro-slippage & volatility buffer
-                            atr = float((result.get("chop_index") or {}).get("atr", 1.0))
-                            vol_buffer = max(0.0, (atr - 2.0) * 0.30) if (current_price >= 10000 and atr > 2.0) else 0.0
-                            clearance_threshold = min(25.0, clearance_threshold + vol_buffer)
-                            flat_pass_thresh = clearance_threshold
-
-                            # High-probability directional determination
-                            call_direction = "PASS"
-                            call_strength = "🛡️ CAPITAL SHIELD: CHOP NOISE PASS (0x UNIT)"
-                            call_confidence = 50.0
-                            call_kelly = "0x PASS (CAPITAL SHIELD)"
-                            is_conviction_call = False
-                            is_zero_defect_call = False
-                            confluence_count = 16
-
-                            # 🛡️ 24-VECTOR INSTITUTIONAL CONFLUENCE ENGINE (Strict Directional Discriminators):
-                            v1_bull = (strike_diff >= clearance_threshold)
-                            v1_bear = (strike_diff <= -clearance_threshold)
-
-                            v2_bull = (recent_mom > 0.05 and of_vel_3s >= 0.0)
-                            v2_bear = (recent_mom < -0.05 and of_vel_3s <= 0.0)
-
-                            v3_bull = (current_price > in_round_vwap + (0.25 if current_price >= 10000 else 0.02))
-                            v3_bear = (current_price < in_round_vwap - (0.25 if current_price >= 10000 else 0.02))
-
-                            v4_bull = (exp_margin >= clearance_threshold * 0.75)
-                            v4_bear = (exp_margin <= -clearance_threshold * 0.75)
-
-                            v5_bull = (merton_p_up >= 0.65)
-                            v5_bear = (merton_p_down >= 0.65)
-
-                            v6_bull = not (hawkes_is_cascade and hawkes_sig < 0) and (recent_mom > 0.0)
-                            v6_bear = not (hawkes_is_cascade and hawkes_sig > 0) and (recent_mom < 0.0)
-
-                            v7_clean = not is_noise_dom and (noise_ratio <= 0.45)
-                            v7_bull = v7_clean and (strike_diff >= clearance_threshold)
-                            v7_bear = v7_clean and (strike_diff <= -clearance_threshold)
-
-                            v8_bull = (taker_buy_pct >= 53.0 and of_delta_5s > 0.0)
-                            v8_bear = (taker_buy_pct <= 47.0 and of_delta_5s < 0.0)
-
-                            v9_bull = (kal_v > 0.02)
-                            v9_bear = (kal_v < -0.02)
-
-                            v10_bull = not (ou_z > 1.6 and recent_mom < 0.0) and (ou_z > -1.5)
-                            v10_bear = not (ou_z < -1.6 and recent_mom > 0.0) and (ou_z < 1.5)
-
-                            v11_bull = (of_fut_price > open_strike and of_basis_delta > 0.0) if of_fut_price > 0 else (strike_diff > 0.0)
-                            v11_bear = (of_fut_price < open_strike and of_basis_delta < 0.0) if of_fut_price > 0 else (strike_diff < 0.0)
-
-                            v12_bull = (r_range_pct >= 0.55 and of_whale_delta >= 0.0)
-                            v12_bear = (r_range_pct <= 0.45 and of_whale_delta <= 0.0)
-
-                            v13_bull = (sigma_gkyz > 0.0001 and recent_mom > 0.0)
-                            v13_bear = (sigma_gkyz > 0.0001 and recent_mom < 0.0)
-
-                            v14_bull = (markov_st in ("TRENDING_UP", "VOLATILE_TREND") or (markov_st != "MEAN_REVERTING" and recent_mom > 0.20))
-                            v14_bear = (markov_st in ("TRENDING_DOWN", "VOLATILE_TREND") or (markov_st != "MEAN_REVERTING" and recent_mom < -0.20))
-
-                            v15_bull = (avell_skew > 0.02 and of_micro_price > open_strike)
-                            v15_bear = (avell_skew < -0.02 and of_micro_price < open_strike)
-
-                            v16_bull = (p_bull >= 0.60)
-                            v16_bear = (p_bear >= 0.60)
-
-                            v17_bull = (burn_ratio_up >= 1.2 or bid_wall_btc > ask_wall_btc * 1.2) and (strike_diff > 0.0)
-                            v17_bear = (burn_ratio_down >= 1.2 or ask_wall_btc > bid_wall_btc * 1.2) and (strike_diff < 0.0)
-
-                            v18_bull = (of_cb_price > open_strike and of_cb_change > 0.0) if of_cb_price > 0 else (strike_diff > 0.0)
-                            v18_bear = (of_cb_price < open_strike and of_cb_change < 0.0) if of_cb_price > 0 else (strike_diff < 0.0)
-
-                            v19_bull = (hurst_h >= 0.52 and recent_mom > 0.0)
-                            v19_bear = (hurst_h >= 0.52 and recent_mom < 0.0)
-
-                            v20_bull = (amihud_sc >= 0.0 and of_whale_delta > 0.02)
-                            v20_bear = (amihud_sc <= 0.0 and of_whale_delta < -0.02)
-
-                            v21_bull = (ac_drift > 0.02)
-                            v21_bear = (ac_drift < -0.02)
-
-                            v22_bull = feller_is_stable and (recent_mom > 0.0)
-                            v22_bear = feller_is_stable and (recent_mom < 0.0)
-
-                            v23_bull = (q_grad > 0.02)
-                            v23_bear = (q_grad < -0.02)
-
-                            v24_bull = (basis_d > 0.02)
-                            v24_bear = (basis_d < -0.02)
-
-                            bull_vectors = [v1_bull, v2_bull, v3_bull, v4_bull, v5_bull, v6_bull, v7_bull, v8_bull, v9_bull, v10_bull, v11_bull, v12_bull, v13_bull, v14_bull, v15_bull, v16_bull, v17_bull, v18_bull, v19_bull, v20_bull, v21_bull, v22_bull, v23_bull, v24_bull]
-                            bear_vectors = [v1_bear, v2_bear, v3_bear, v4_bear, v5_bear, v6_bear, v7_bear, v8_bear, v9_bear, v10_bear, v11_bear, v12_bear, v13_bear, v14_bear, v15_bear, v16_bear, v17_bear, v18_bear, v19_bear, v20_bear, v21_bear, v22_bear, v23_bear, v24_bear]
-                            bull_confluence = sum(1 for v in bull_vectors if v)
-                            bear_confluence = sum(1 for v in bear_vectors if v)
-
-                            # Require strict confluence + decisive lead over opposing side:
-                            min_conf = 16 if zero_defect_mode else 14
-                            conf_lead = 6 if zero_defect_mode else 4
-                            bull_zd_aligned = (bull_confluence >= min_conf and (bull_confluence - bear_confluence) >= conf_lead and v1_bull and v6_bull and v10_bull)
-                            bear_zd_aligned = (bear_confluence >= min_conf and (bear_confluence - bull_confluence) >= conf_lead and v1_bear and v6_bear and v10_bear)
-                            confluence_count = bull_confluence if bull_zd_aligned else (bear_confluence if bear_zd_aligned else max(bull_confluence, bear_confluence))
-
-                            if bull_zd_aligned and not bear_zd_aligned:
-                                call_direction = "UP"
-                                if confluence_count >= 20:
-                                    call_confidence = 100.0
-                                    call_strength = f"🔥 🛡️ 100.0% INFALLIBLE QUANTUM APEX: BET UP NOW (Δ +${strike_diff:.2f} | {confluence_count}/24 Confluence | Target: ${proj_expiry_p:.2f})"
-                                    call_kelly = "5x MAXIMUM INFALLIBLE UNIT"
-                                elif confluence_count >= 16:
-                                    call_confidence = 99.0
-                                    call_strength = f"👑 ☠️ OMNISCIENT GOD-TIER APEX: BET UP NOW (Δ +${strike_diff:.2f} | {confluence_count}/24 Confluence)"
-                                    call_kelly = "4x LETHAL APEX UNIT"
-                                else:
-                                    call_confidence = 97.5
-                                    call_strength = f"⚡ 🛡️ 24-VECTOR CONFLUENCE: BET UP NOW (Δ +${strike_diff:.2f} | {confluence_count}/24 Confluence)"
-                                    call_kelly = "3x MAX CONFLUENCE UNIT"
-                                is_conviction_call = True
-                                is_zero_defect_call = True
-                            elif bear_zd_aligned and not bull_zd_aligned:
-                                call_direction = "DOWN"
-                                if confluence_count >= 20:
-                                    call_confidence = 100.0
-                                    call_strength = f"🔥 🛡️ 100.0% INFALLIBLE QUANTUM APEX: BET DOWN NOW (Δ -${abs(strike_diff):.2f} | {confluence_count}/24 Confluence | Target: ${proj_expiry_p:.2f})"
-                                    call_kelly = "5x MAXIMUM INFALLIBLE UNIT"
-                                elif confluence_count >= 16:
-                                    call_confidence = 99.0
-                                    call_strength = f"👑 ☠️ OMNISCIENT GOD-TIER APEX: BET DOWN NOW (Δ -${abs(strike_diff):.2f} | {confluence_count}/24 Confluence)"
-                                    call_kelly = "4x LETHAL APEX UNIT"
-                                else:
-                                    call_confidence = 97.5
-                                    call_strength = f"⚡ 🛡️ 24-VECTOR CONFLUENCE: BET DOWN NOW (Δ -${abs(strike_diff):.2f} | {confluence_count}/24 Confluence)"
-                                    call_kelly = "3x MAX CONFLUENCE UNIT"
-                                is_conviction_call = True
-                                is_zero_defect_call = True
-                            else:
-                                call_direction = "PASS"
-                                call_confidence = 50.0
-                                confluence_display = max(bull_confluence, bear_confluence)
-                                if abs(strike_diff) < flat_pass_thresh:
-                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: CHOP CORRIDOR PASS (Δ ${strike_diff:+.2f} within ±${flat_pass_thresh:.2f})"
-                                elif not v10_bull if strike_diff > 0 else not v10_bear:
-                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: OU MEAN-REVERSION EXHAUSTION (Z={ou_z:+.1f}σ)"
-                                elif not v6_bull if strike_diff > 0 else not v6_bear:
-                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: HAWKES CASCADE REVERSAL VETO (η={hawkes_eta:.2f})"
-                                elif not v7_clean:
-                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: ROLL NOISE FILTER PASS (Noise {noise_ratio*100:.0f}%)"
-                                else:
-                                    call_strength = f"🛡️ 100% CAPITAL SHIELD: LOW CONFLUENCE CHOP PASS ({confluence_display}/24 vs 16 req)"
-                                call_kelly = "0x (PASS)"
-                                is_conviction_call = False
-                                is_zero_defect_call = False
 
                             # ABSOLUTE DIRECTIONAL INTEGRITY CHECK
                             if call_direction == "UP" and strike_diff < -0.05:

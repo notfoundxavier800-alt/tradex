@@ -263,15 +263,51 @@ class TechnicalAnalyzer:
         except Exception:
             return {'signal': 0, 'value': 0.0, 'detail': 'Neutral', 'depth_ratio': 50.0}
 
-    def calc_exhaustion_absorption(self, df: pd.DataFrame, order_flow: Dict[str, Any] = None) -> Dict[str, Any]:
+    def calc_exhaustion_absorption(self, df: Any = None, order_flow: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Peak Absorption & Exhaustion Detector:
         Spots when price pushes into a new extreme but CVD drops or wicks form,
         signaling that smart money is absorbing the push and about to reverse.
         """
         try:
+            if isinstance(df, dict) and order_flow is None:
+                order_flow = df
+                df = None
+
+            if df is None:
+                if not order_flow:
+                    return {'signal': 0, 'value': 0.0, 'score': 0.0, 'detail': 'Buffering...'}
+                spot_change = float(order_flow.get("spot_change_5s", 0.0))
+                taker_buy_pct = float(order_flow.get("taker_buy_pct_5s", 50.0))
+                ae = float(order_flow.get("absorption_exhaustion", 0.0))
+                delta_accel = float(order_flow.get("delta_acceleration", 0.0))
+                delta_5s = float(order_flow.get("delta_5s", 0.0))
+
+                sig = 0
+                score = 0.0
+                detail = "Order Flow Balanced"
+
+                if ae > 0:
+                    if spot_change > 0 or taker_buy_pct > 60:
+                        sig = -1
+                        score = -min(1.0, ae)
+                        detail = f"Exhaustion: High Taker Buy ({taker_buy_pct:.0f}%) with Absorption ({ae:.2f})"
+                    elif spot_change < 0 or taker_buy_pct < 40:
+                        sig = 1
+                        score = min(1.0, ae)
+                        detail = f"Exhaustion: High Taker Sell ({100-taker_buy_pct:.0f}%) with Absorption ({ae:.2f})"
+                    else:
+                        score = ae
+                        detail = f"Absorption Exhaustion: {ae:.2f}"
+                elif delta_accel != 0:
+                    score = float(np.clip(delta_accel, -1.0, 1.0))
+                    sig = 1 if score > 0.2 else (-1 if score < -0.2 else 0)
+                    detail = f"CVD Delta Accel: {delta_accel:.2f}"
+
+                return {'signal': sig, 'value': round(float(score), 3), 'score': round(float(score), 3), 'detail': detail}
+
             if len(df) < 8 or not order_flow:
-                return {'signal': 0, 'value': 0.0, 'detail': 'Buffering...'}
+                return {'signal': 0, 'value': 0.0, 'score': 0.0, 'detail': 'Buffering...'}
 
             delta_accel = order_flow.get("delta_acceleration", 0.0)
             delta_5s = order_flow.get("delta_5s", 0.0)
@@ -306,9 +342,9 @@ class TechnicalAnalyzer:
                 score = -0.4
                 detail = f"📉 CVD ACCELERATION DOWN: {delta_accel:.2f}"
 
-            return {'signal': sig, 'value': round(float(score), 3), 'detail': detail}
+            return {'signal': sig, 'value': round(float(score), 3), 'score': round(float(score), 3), 'detail': detail}
         except Exception:
-            return {'signal': 0, 'value': 0.0, 'detail': 'Neutral'}
+            return {'signal': 0, 'value': 0.0, 'score': 0.0, 'detail': 'Neutral'}
 
     def calc_volatility_gate(self, df: pd.DataFrame) -> Dict[str, Any]:
         try:
@@ -1858,6 +1894,9 @@ class TechnicalAnalyzer:
         smc_score = smc_sweep['score'] if smc_sweep['signal'] != 0 else fvg_data['score']
         smc_detail = smc_sweep['detail'] if smc_sweep['signal'] != 0 else fvg_data['detail']
 
+        delta_5s = float((order_flow or {}).get("delta_5s", 0.0))
+        bouchaud_info = self.calc_bouchaud_propagator_impact(decay_kernel=0.25, taker_delta=delta_5s, tau=time_left)
+
         # 🌌 Axiomatic 10-Factor Confluence Suite
         indicators = [
             {**barrier_indicator, 'name': 'Barrier Probability Φ(d)', 'weight': 0.18},
@@ -1880,6 +1919,32 @@ class TechnicalAnalyzer:
         queue_grad_info = self.calc_queue_depletion_gradient(order_flow=order_flow)
         basis_info = self.calc_cross_venue_basis_expansion(order_flow=order_flow, current_price=curr_p)
 
+        # Extended Quantitative Indicators to populate full 24-vector confluence matrix
+        extended_indicators = [
+            {'name': 'Avellaneda-Stoikov Skew', 'value': round(avellaneda_info.get('skew_bps', 0.0), 2), 'score': avellaneda_info.get('score', 0.0), 'signal': avellaneda_info.get('signal', 0), 'weight': 0.05, 'detail': avellaneda_info.get('detail', '')},
+            {'name': 'Kalman Velocity Denoising', 'value': round(kalman_info.get('velocity_bps', 0.0), 2), 'score': kalman_info.get('score', 0.0), 'signal': kalman_info.get('signal', 0), 'weight': 0.05, 'detail': kalman_info.get('detail', '')},
+            {'name': 'Ornstein-Uhlenbeck Equilibrium', 'value': round(ou_info.get('z_score', 0.0), 2), 'score': ou_info.get('score', 0.0), 'signal': ou_info.get('signal', 0), 'weight': 0.05, 'detail': ou_info.get('detail', '')},
+            {'name': 'Renaissance HMM Regime', 'value': round(markov_info.get('persistence_prob', 0.5), 2), 'score': markov_info.get('score', 0.0), 'signal': markov_info.get('signal', 0), 'weight': 0.05, 'detail': markov_info.get('detail', '')},
+            {'name': 'Bouchaud Propagator Impact', 'value': round(bouchaud_info.get('impact_score', 0.0), 3), 'score': bouchaud_info.get('score', 0.0), 'signal': bouchaud_info.get('signal', 0), 'weight': 0.05, 'detail': bouchaud_info.get('detail', '')},
+            {'name': 'Cont-Stoikov Queue Gradient', 'value': round(queue_grad_info.get('gradient', 0.0), 2), 'score': queue_grad_info.get('score', 0.0), 'signal': queue_grad_info.get('signal', 0), 'weight': 0.04, 'detail': queue_grad_info.get('detail', '')},
+            {'name': 'Almgren-Chriss Drift', 'value': round(almgren_info.get('drift', 0.0), 2), 'score': almgren_info.get('score', 0.0), 'signal': almgren_info.get('signal', 0), 'weight': 0.04, 'detail': almgren_info.get('detail', '')},
+            {'name': 'Feller Volatility Stability', 'value': round(feller_info.get('feller_ratio', 1.0), 2), 'score': feller_info.get('score', 0.0), 'signal': feller_info.get('signal', 0), 'weight': 0.03, 'detail': feller_info.get('detail', '')},
+            {'name': 'L2 Book Wall Absorption', 'value': round(book_wall_info.get('bid_wall_btc', 0.0), 2), 'score': book_wall_info.get('score', 0.0), 'signal': book_wall_info.get('signal', 0), 'weight': 0.04, 'detail': book_wall_info.get('detail', '')},
+            {'name': 'Tri-Venue Triangulation', 'value': round(tri_venue_info.get('fut_delta', 0.0), 2), 'score': tri_venue_info.get('score', 0.0), 'signal': tri_venue_info.get('signal', 0), 'weight': 0.04, 'detail': tri_venue_info.get('detail', '')},
+            {'name': 'GKYZ Realized Volatility', 'value': round(gkyz_info.get('sigma_gkyz', 0.0), 3), 'score': gkyz_info.get('score', 0.0), 'signal': gkyz_info.get('signal', 0), 'weight': 0.03, 'detail': gkyz_info.get('detail', '')},
+            {'name': 'Cross-Venue Basis Expansion', 'value': round(basis_info.get('basis_delta', 0.0), 2), 'score': basis_info.get('score', 0.0), 'signal': basis_info.get('signal', 0), 'weight': 0.03, 'detail': basis_info.get('detail', '')},
+            {'name': 'Bayesian MAP Posterior', 'value': round(bayesian_info.get('p_bull', 0.5), 2), 'score': round(float(np.clip((bayesian_info.get('p_bull', 0.5) - 0.5) * 2.0, -1.0, 1.0)), 3), 'signal': 1 if bayesian_info.get('p_bull', 0.5) > 0.55 else (-1 if bayesian_info.get('p_bull', 0.5) < 0.45 else 0), 'weight': 0.04, 'detail': bayesian_info.get('detail', '')},
+            {'name': 'Shannon Microstructure Entropy', 'value': round(entropy_info.get('norm_entropy', 1.0), 2), 'score': entropy_info.get('score', 0.0), 'signal': entropy_info.get('signal', 0), 'weight': 0.03, 'detail': entropy_info.get('detail', '')}
+        ]
+        indicators.extend(extended_indicators)
+
+        # Enforce that all individual vector scores are bounded in [-1.0, 1.0]
+        for ind in indicators:
+            if "score" in ind:
+                ind["score"] = float(np.clip(float(ind["score"]), -1.0, 1.0))
+            else:
+                ind["score"] = 0.0
+
         math_models = {
             "shannon_entropy": entropy_info,
             "ornstein_uhlenbeck": ou_info,
@@ -1900,7 +1965,8 @@ class TechnicalAnalyzer:
             "almgren_chriss": almgren_info,
             "feller_stability": feller_info,
             "queue_gradient": queue_grad_info,
-            "basis_expansion": basis_info
+            "basis_expansion": basis_info,
+            "bouchaud_propagator": bouchaud_info
         }
 
         mtf_data = self.calc_mtf_alignment(df)
@@ -1935,6 +2001,7 @@ class TechnicalAnalyzer:
             "feller_model": feller_info,
             "queue_gradient_model": queue_grad_info,
             "basis_expansion_model": basis_info,
+            "bouchaud_model": bouchaud_info,
             "chambering_model": chambering_info,
             "smc_sweep": smc_sweep,
             "fvg_data": fvg_data,
@@ -1942,6 +2009,19 @@ class TechnicalAnalyzer:
             "confluence_total": 24,
             "math_models": math_models
         }
+
+    def calc_bouchaud_propagator_impact(self, decay_kernel: float = 0.25, taker_delta: float = 0.0, tau: float = 1.0) -> Dict[str, Any]:
+        """
+        Bouchaud Propagator Model (Pillar 6 / Feature 6):
+        Calculates sub-diffusive transient market impact decay.
+        """
+        return calc_bouchaud_propagator_impact(decay_kernel=decay_kernel, taker_delta=taker_delta, tau=tau)
+
+    def calc_forward_obstacle_absorption(self, bids: Any = None, asks: Any = None, current_price: float = 0.0, strike: Optional[float] = None, direction: str = "WAIT") -> Dict[str, Any]:
+        """
+        Anti-Whipsaw Forward Obstacle Absorption Gate (R2 / Feature 19).
+        """
+        return calc_forward_obstacle_absorption(bids=bids, asks=asks, current_price=current_price, strike=strike, direction=direction)
 
     def calc_book_wall_absorption(self, order_flow: Optional[Dict[str, Any]], current_price: float, round_open_price: Optional[float]) -> Dict[str, Any]:
         """
@@ -2894,4 +2974,192 @@ class TechnicalAnalyzer:
                 "kyle_model": {'lambda': 0.0},
                 "queue_model": {'depletion': 0.0, 'depth_ratio': 50.0}
             }
+
+
+# ---------------------------------------------------------------------------
+# Additional analysis helper functions required by test suite
+# ---------------------------------------------------------------------------
+
+def _extract_order_book_levels(ladder: Any) -> List[tuple]:
+    levels = []
+    if not ladder:
+        return levels
+    if isinstance(ladder, dict):
+        for p, q in ladder.items():
+            try:
+                levels.append((float(p), float(q)))
+            except (ValueError, TypeError):
+                continue
+    elif isinstance(ladder, (list, tuple)):
+        for item in ladder:
+            if isinstance(item, dict):
+                p = item.get("price", item.get("p"))
+                q = item.get("qty", item.get("size", item.get("quantity", item.get("amount", item.get("q", 0.0)))))
+                if p is not None and q is not None:
+                    try:
+                        levels.append((float(p), float(q)))
+                    except (ValueError, TypeError):
+                        continue
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                try:
+                    levels.append((float(item[0]), float(item[1])))
+                except (ValueError, TypeError):
+                    continue
+    return levels
+
+
+def calc_forward_obstacle_absorption(
+    bids: Any = None,
+    asks: Any = None,
+    current_price: float = 0.0,
+    strike: Optional[float] = None,
+    direction: str = "WAIT"
+) -> Dict[str, Any]:
+    """Estimate if a forward price obstacle (order book wall) will absorb price movement.
+
+    Interface Contract:
+        calc_forward_obstacle_absorption(bids, asks, current_price, strike, direction) -> Dict[str, Any]
+        - Reject/block DOWN if bid wall >= 2.0 BTC in $2-$5 range below strike/current_price.
+        - Reject/block UP if ask wall >= 2.0 BTC in $2-$5 range above strike/current_price.
+
+    Returns dict with keys:
+        - 'is_blocked' (bool)
+        - 'wall_size' (float)
+        - 'wall_price' (float)
+        - 'obstacle_absorption' (bool)
+        - 'side' (str)
+        - 'depth' (float)
+    """
+    if isinstance(bids, dict) and asks is None:
+        order_flow = bids
+        dl = order_flow.get("depth_ladder", {})
+        bids = dl.get("bids", order_flow.get("bids", order_flow.get("bid_depths", [])))
+        asks = dl.get("asks", order_flow.get("asks", order_flow.get("ask_depths", [])))
+        current_price = float(order_flow.get("current_price", order_flow.get("price", 0.0)))
+        strike = order_flow.get("strike", order_flow.get("strike_price", order_flow.get("round_open_price", current_price)))
+        direction = str(order_flow.get("direction", "WAIT"))
+
+    bid_levels = _extract_order_book_levels(bids)
+    ask_levels = _extract_order_book_levels(asks)
+
+    ref_p = float(strike) if (strike is not None and strike > 0) else float(current_price)
+    if ref_p <= 0 and current_price > 0:
+        ref_p = float(current_price)
+
+    dir_upper = str(direction).upper() if direction else "WAIT"
+
+    is_blocked = False
+    wall_size = 0.0
+    wall_price = 0.0
+
+    if dir_upper == "DOWN":
+        candidate_walls = []
+        for p, q in bid_levels:
+            dist = round(ref_p - p, 4)
+            if 2.0 <= dist <= 5.0 and q >= 2.0:
+                candidate_walls.append((q, p))
+        if candidate_walls:
+            candidate_walls.sort(key=lambda x: (x[0], -abs(ref_p - x[1])), reverse=True)
+            is_blocked = True
+            wall_size = float(candidate_walls[0][0])
+            wall_price = float(candidate_walls[0][1])
+
+    elif dir_upper == "UP":
+        candidate_walls = []
+        for p, q in ask_levels:
+            dist = round(p - ref_p, 4)
+            if 2.0 <= dist <= 5.0 and q >= 2.0:
+                candidate_walls.append((q, p))
+        if candidate_walls:
+            candidate_walls.sort(key=lambda x: (x[0], -abs(x[1] - ref_p)), reverse=True)
+            is_blocked = True
+            wall_size = float(candidate_walls[0][0])
+            wall_price = float(candidate_walls[0][1])
+
+    side = "BUY" if (is_blocked and dir_upper == "DOWN") else ("SELL" if (is_blocked and dir_upper == "UP") else "NONE")
+
+    return {
+        "is_blocked": is_blocked,
+        "wall_size": round(wall_size, 4),
+        "wall_price": round(wall_price, 4),
+        "obstacle_absorption": is_blocked,
+        "side": side,
+        "depth": round(wall_size, 4)
+    }
+
+
+def calc_bouchaud_propagator_impact(
+    decay_kernel: float = 0.25,
+    taker_delta: float = 0.0,
+    tau: float = 1.0
+) -> Dict[str, Any]:
+    """
+    Bouchaud Propagator Model of Transient Market Impact (Pillar 6 / Feature 6):
+    Tracks sub-diffusive transient market impact decay I(t) ~ t^{-gamma}
+    where gamma is the propagator decay kernel exponent.
+    Prevents entering trades after aggressive impact has peaked.
+    """
+    try:
+        gamma = float(decay_kernel if decay_kernel is not None else 0.25)
+        t = max(0.01, float(tau))
+        delta = float(taker_delta)
+        # Power-law kernel G(tau) = (1.0 + tau)^(-gamma)
+        kernel = float((1.0 + t) ** (-gamma))
+        # Transient impact decays monotonically with tau for taker_delta > 0
+        impact = float(np.tanh(0.15 * delta * kernel))
+        score = float(np.clip(impact, -1.0, 1.0))
+        sig = 1 if score >= 0.15 else (-1 if score <= -0.15 else 0)
+        detail = f"Bouchaud Propagator: Impact {impact:+.3f} (Decay G(τ)={kernel:.3f}, γ={gamma:.2f})"
+        return {
+            "decay_kernel": round(gamma, 4),
+            "tau": round(t, 2),
+            "propagator_decay": round(kernel, 4),
+            "impact_score": round(impact, 4),
+            "score": round(score, 4),
+            "signal": sig,
+            "detail": detail
+        }
+    except Exception:
+        return {
+            "decay_kernel": 0.25,
+            "tau": 1.0,
+            "propagator_decay": 1.0,
+            "impact_score": 0.0,
+            "score": 0.0,
+            "signal": 0,
+            "detail": "Bouchaud Propagator Equilibrium"
+        }
+
+
+def calc_cvd_second_derivative(cvd_series: List[float]) -> float:
+    """Compute the second derivative of the Cumulative Volume Delta (CVD):
+    d2 = C[t] - 2*C[t-1] + C[t-2]
+    Returns 0.0 if series has fewer than 3 elements.
+    """
+    if not cvd_series or len(cvd_series) < 3:
+        return 0.0
+    return float(cvd_series[-1] - 2 * cvd_series[-2] + cvd_series[-3])
+
+def calc_ornstein_uhlenbeck(price_series: List[float]) -> Dict[str, Any]:
+    """Estimate Ornstein‑Uhlenbeck mean‑reversion Z‑score for a price series.
+
+    Returns a dict with keys ``z_score``, ``theta`` (mean‑reversion strength), and ``mu`` (EMA).
+    """
+    if not price_series:
+        return {"z_score": 0.0, "theta": 0.0, "mu": 0.0}
+    arr = np.array(price_series, dtype=float)
+    span = 10
+    alpha = 2 / (span + 1)
+    ema = arr[0]
+    for p in arr[1:]:
+        ema = alpha * p + (1 - alpha) * ema
+    sigma = np.std(arr) if arr.size > 1 else 1e-6
+    latest = arr[-1]
+    z = (latest - ema) / sigma
+    if len(arr) >= 2:
+        rho = np.corrcoef(arr[1:], arr[:-1])[0, 1]
+        theta = max(0.0, 1 - rho)
+    else:
+        theta = 0.0
+    return {"z_score": float(z), "theta": float(theta), "mu": float(ema)}
 

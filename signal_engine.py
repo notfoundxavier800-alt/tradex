@@ -5,8 +5,17 @@ from collections import deque
 import threading
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from analysis import TechnicalAnalyzer
+
+# --- New Model Stubs Imports ---
+from models.renaissance_hmm import RenaissanceHMM
+from models.cont_stoikov import ContStoikovQueue
+from models.bouchaud_propagator import BouchaudPropagator
+
+# Configurable gate thresholds
+WALL_THRESHOLD = 2.0  # BTC depth within $2‑$5 of strike
+OU_Z_THRESH = 1.8     # OU Z‑score exhaustion limit
 
 class SignalEngine:
     """
@@ -24,6 +33,9 @@ class SignalEngine:
         self.history = deque(maxlen=50)
         self.lock = threading.Lock()
 
+        self.renaissance_hmm = RenaissanceHMM()
+        self.cont_stoikov = ContStoikovQueue()
+        self.bouchaud = BouchaudPropagator()
         self.pending_predictions = deque()
         self.total_wins = 0
         self.total_losses = 0
@@ -354,15 +366,31 @@ class SignalEngine:
         a13_roll = roll_score
         a14_ou = -float(np.tanh(ou_z / 1.8))
         a15_amihud = amihud_score
-        a16_markov = float((1.0 if markov_st == "TREND_UP" else (-1.0 if markov_st == "TREND_DOWN" else 0.0)) * markov_p)
+        if markov_st in ("TREND_MOMENTUM", "TREND_UP", "TRENDING", "TRENDING_UP"):
+            m_dir = 1.0 if (recent_mom >= 0 and vel_3s >= 0) else (-1.0 if (recent_mom < 0 and vel_3s < 0) else (1.0 if recent_mom >= 0 else -1.0))
+            a16_markov = float(m_dir * markov_p)
+        elif markov_st in ("TREND_DOWN", "TRENDING_DOWN"):
+            a16_markov = float(-1.0 * markov_p)
+        else:
+            a16_markov = 0.0
+
         a17_avell = float(np.tanh(avell_skew / 0.5))
         a18_gkyz = float(np.tanh(sigma_gkyz * 100.0) * (1.0 if recent_mom >= 0 else -1.0))
         a19_hurst = float(np.clip((hurst_h - 0.50) * 4.0, -1.0, 1.0)) * (1.0 if recent_mom >= 0 else -1.0)
-        a20_amihud = amihud_score
+
+        bouchaud_info = scan.get("bouchaud_model") or math_models.get("bouchaud_propagator", {})
+        bouchaud_score = float(bouchaud_info.get("score", self.bouchaud.compute(0.25, delta_5s, time_left)))
+        a20_bouchaud = bouchaud_score
+
         a21_almgren = float(np.tanh(ac_drift / 1.0))
         a22_feller = float(np.clip((feller_ratio - 1.0) / 1.5, -1.0, 1.0))
         a23_queue_grad = queue_grad_score
         a24_basis = basis_score
+
+        # Compute additional model scores
+        a25_hmm = self.renaissance_hmm.compute(df)
+        a26_cont_stoikov = self.cont_stoikov.compute(order_flow)
+        a27_bouchaud = self.bouchaud.compute(0.25, delta_5s, time_left)
 
         # Comprehensive 24-Vector Institutional Composite (weights sum to 1.0):
         raw_composite = (
@@ -385,8 +413,8 @@ class SignalEngine:
             (a17_avell * 0.03) +
             (a18_gkyz * 0.03) +
             (a19_hurst * 0.03) +
-            (a20_amihud * 0.03) +
-            (a21_almgren * 0.04) +
+            (a20_bouchaud * 0.04) +
+            (a21_almgren * 0.03) +
             (a22_feller * 0.02) +
             (a23_queue_grad * 0.03) +
             (a24_basis * 0.03)
@@ -430,7 +458,7 @@ class SignalEngine:
         # True Volatility-Calibrated Strike Clearance (avoids coin-flip bets in 5s Brownian motion)
         if zd_active:
             if price_ref >= 10000:
-                clearance_thresh = max(14.0, price_ref * 0.00016)
+                clearance_thresh = max(16.0, price_ref * 0.00016)
             elif price_ref >= 1000:
                 clearance_thresh = max(0.40, price_ref * 0.00016)
             elif price_ref >= 100:
@@ -517,8 +545,8 @@ class SignalEngine:
         v13_bear = (sigma_gkyz > 0.0001 and recent_mom < 0.0)
 
         # 14. 3-State Markov Transition Persistence
-        v14_bull = (markov_st in ("TRENDING_UP", "VOLATILE_TREND") or (markov_st != "MEAN_REVERTING" and recent_mom > 0.20))
-        v14_bear = (markov_st in ("TRENDING_DOWN", "VOLATILE_TREND") or (markov_st != "MEAN_REVERTING" and recent_mom < -0.20))
+        v14_bull = (markov_st in ("TREND_MOMENTUM", "TRENDING_UP", "TREND_UP", "VOLATILE_TREND") and recent_mom >= 0.0) or (markov_st not in ("CHOP", "GAUSSIAN_CHOP", "MEAN_REVERTING") and recent_mom > 0.20)
+        v14_bear = (markov_st in ("TREND_MOMENTUM", "TRENDING_DOWN", "TREND_DOWN", "VOLATILE_TREND") and recent_mom <= 0.0) or (markov_st not in ("CHOP", "GAUSSIAN_CHOP", "MEAN_REVERTING") and recent_mom < -0.20)
 
         # 15. Avellaneda-Stoikov Dealer Skew
         v15_bull = (avell_skew > 0.02)
@@ -540,9 +568,9 @@ class SignalEngine:
         v19_bull = (hurst_h >= 0.52 and recent_mom > 0.0)
         v19_bear = (hurst_h >= 0.52 and recent_mom < 0.0)
 
-        # 20. Amihud Illiquidity Ratio & Resilience
-        v20_bull = (amihud_score >= 0.0 and of_whale_delta > 0.02)
-        v20_bear = (amihud_score <= 0.0 and of_whale_delta < -0.02)
+        # 20. Bouchaud Propagator Model of Transient Impact Decay
+        v20_bull = (bouchaud_score >= 0.15 and delta_5s > 0)
+        v20_bear = (bouchaud_score <= -0.15 and delta_5s < 0)
 
         # 21. Almgren-Chriss Optimal Execution Liquidation Drift
         v21_bull = (ac_drift > 0.02)
@@ -602,10 +630,45 @@ class SignalEngine:
         else:
             direction = 'WAIT'
 
-        # Physical impossibility guard: never predict UP if below strike, never predict DOWN if above strike!
-        if direction == 'UP' and delta_strike < -0.05:
+        # Capital Shield Gating & Anti-Half-Prediction Gates:
+
+        # 1. Chop Regime Gate: instantly pass when chop state is detected
+        if chop_info.get("is_chop", False) or markov_st in ("CHOP", "GAUSSIAN_CHOP") or regime == "CHOP":
             direction = 'WAIT'
-        elif direction == 'DOWN' and delta_strike > 0.05:
+
+        # 2. Absolute Direction Guard: reject UP if price is below strike; reject DOWN if price is above strike
+        if direction == 'UP' and delta_strike < 0:
+            direction = 'WAIT'
+        if direction == 'DOWN' and delta_strike > 0:
+            direction = 'WAIT'
+
+        # 3. Strike Clearance Separation: require >= $16.00 on BTC beyond Brownian motion noise
+        if price_ref >= 10000 and abs(delta_strike) < 16.00:
+            direction = 'WAIT'
+
+        # 4. Anti-Whipsaw Order-Book Obstacle Wall Gate (>= 2.0 BTC in $2-$5 range)
+        if direction == 'DOWN' and bid_wall_btc >= WALL_THRESHOLD:
+            direction = 'WAIT'
+        if direction == 'UP' and ask_wall_btc >= WALL_THRESHOLD:
+            direction = 'WAIT'
+
+        # 5. Whale Wall Ratio Gate: require >= 2.5:1 in trade direction
+        if zd_active or (bid_wall_btc > 0 or ask_wall_btc > 0):
+            if direction == 'UP' and not (burn_ratio_up >= 2.5 or (bid_wall_btc >= 2.5 * max(0.05, ask_wall_btc))):
+                direction = 'WAIT'
+            elif direction == 'DOWN' and not (burn_ratio_down >= 2.5 or (ask_wall_btc >= 2.5 * max(0.05, bid_wall_btc))):
+                direction = 'WAIT'
+
+        # 6. CVD Deceleration Gate: sell deceleration (accel > 0) vetoes DOWN; buy deceleration (accel < 0) vetoes UP
+        if direction == 'DOWN' and cvd_accel > 0:
+            direction = 'WAIT'
+        if direction == 'UP' and cvd_accel < 0:
+            direction = 'WAIT'
+
+        # 7. OU Exhaustion Gate: oversold (ou_z < -OU_Z_THRESH) vetoes DOWN; overbought (ou_z > OU_Z_THRESH) vetoes UP
+        if direction == 'DOWN' and ou_z < -OU_Z_THRESH:
+            direction = 'WAIT'
+        if direction == 'UP' and ou_z > OU_Z_THRESH:
             direction = 'WAIT'
 
         self.prev_direction = direction

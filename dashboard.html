@@ -10,6 +10,202 @@
     <link rel="apple-touch-icon" href="/static/icon-192.png">
     <title>tradex</title>
     <link rel="stylesheet" href="/static/style.css?v=28.0">
+    <style>
+    /* Dual-Phase Countdown & Live Battle Arena HUD Styles */
+    .dual-phase-indicator-bar {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin: 8px 0 12px 0;
+        padding: 8px 12px;
+        background: rgba(15, 23, 42, 0.7);
+        border: 1px solid rgba(56, 189, 248, 0.2);
+        border-radius: 8px;
+    }
+    .phase-stage-card {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 8px 12px;
+        border-radius: 6px;
+        background: rgba(2, 6, 23, 0.6);
+        border: 1.5px solid rgba(148, 163, 184, 0.2);
+        transition: all 0.3s ease;
+    }
+    .phase-stage-card.active-phase {
+        background: rgba(0, 230, 118, 0.12);
+        border-color: #00e676;
+        box-shadow: 0 0 15px rgba(0, 230, 118, 0.3);
+    }
+    .phase-stage-card.active-battle {
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(245, 158, 11, 0.2));
+        border-color: #ef4444;
+        box-shadow: 0 0 20px rgba(239, 68, 68, 0.5);
+        animation: battlePulse 1s infinite alternate;
+    }
+    @keyframes battlePulse {
+        0% { transform: scale(1); box-shadow: 0 0 12px rgba(239, 68, 68, 0.4); }
+        100% { transform: scale(1.02); box-shadow: 0 0 24px rgba(245, 158, 11, 0.6); }
+    }
+    .phase-stage-badge {
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+        color: #94a3b8;
+        text-transform: uppercase;
+    }
+    .phase-stage-card.active-phase .phase-stage-badge {
+        color: #00e676;
+    }
+    .phase-stage-card.active-battle .phase-stage-badge {
+        color: #f59e0b;
+    }
+    .phase-stage-timer {
+        font-size: 1.4rem;
+        font-weight: 900;
+        font-family: ui-monospace, monospace;
+        color: #f8fafc;
+        margin: 2px 0;
+    }
+    .phase-stage-desc {
+        font-size: 0.68rem;
+        color: #64748b;
+    }
+    .phase-stage-vs {
+        font-size: 18px;
+        animation: pulse 1s infinite alternate;
+    }
+    .battle-arena-strip {
+        margin: 10px 0;
+        padding: 10px 14px;
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(24, 24, 37, 0.95));
+        border: 1.5px solid rgba(245, 158, 11, 0.35);
+        border-radius: 8px;
+        box-shadow: 0 0 20px rgba(245, 158, 11, 0.15);
+    }
+    .battle-arena-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        align-items: center;
+    }
+    .battle-cell {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+    .battle-cell-label {
+        font-size: 0.68rem;
+        font-weight: 800;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .battle-cell-val {
+        font-size: 1.15rem;
+        font-weight: 900;
+        font-family: ui-monospace, monospace;
+        color: #38bdf8;
+    }
+    .battle-cell-sub {
+        font-size: 0.68rem;
+        color: #64748b;
+    }
+    .battle-combat-badge {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        font-weight: 800;
+        background: rgba(0, 230, 118, 0.15);
+        color: #00e676;
+        border: 1px solid rgba(0, 230, 118, 0.3);
+        text-align: center;
+    }
+    .battle-combat-badge.combat-live {
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.3), rgba(245, 158, 11, 0.3));
+        color: #fbbf24;
+        border: 1.5px solid #ef4444;
+        box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
+        animation: combatBlink 0.6s infinite alternate;
+    }
+    @keyframes combatBlink {
+        0% { filter: brightness(1); }
+        100% { filter: brightness(1.3); }
+    }
+    .round-phase-badge.phase-battle {
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.25), rgba(245, 158, 11, 0.25));
+        color: #fbbf24;
+        border: 1.5px solid #ef4444;
+        box-shadow: 0 0 15px rgba(239, 68, 68, 0.5);
+        animation: battlePulse 0.8s infinite alternate;
+    }
+    .round-settlement-banner {
+        margin: 10px 0;
+        padding: 12px 16px;
+        border-radius: 8px;
+        border: 2px solid #00e676;
+        background: linear-gradient(135deg, rgba(5, 46, 22, 0.95), rgba(15, 23, 42, 0.95));
+        box-shadow: 0 0 25px rgba(0, 230, 118, 0.4);
+        animation: bannerPop 0.4s ease-out;
+    }
+    .round-settlement-banner.loss {
+        border-color: #ef4444;
+        background: linear-gradient(135deg, rgba(69, 10, 10, 0.95), rgba(15, 23, 42, 0.95));
+        box-shadow: 0 0 25px rgba(239, 68, 68, 0.4);
+    }
+    .round-settlement-banner.tie {
+        border-color: #94a3b8;
+        background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));
+        box-shadow: 0 0 20px rgba(148, 163, 184, 0.3);
+    }
+    @keyframes bannerPop {
+        from { transform: scale(0.95); opacity: 0; }
+        to { transform: scale(1); opacity: 1; }
+    }
+    .settle-header-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+    .settle-badge {
+        font-size: 1.05rem;
+        font-weight: 900;
+        color: #00e676;
+        letter-spacing: 0.5px;
+    }
+    .round-settlement-banner.loss .settle-badge {
+        color: #ef4444;
+    }
+    .round-settlement-banner.tie .settle-badge {
+        color: #cbd5e1;
+    }
+    .settle-close-btn {
+        background: transparent;
+        border: none;
+        color: #94a3b8;
+        font-size: 16px;
+        cursor: pointer;
+    }
+    .settle-pills-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .settle-pill {
+        padding: 3px 10px;
+        border-radius: 4px;
+        font-size: 0.78rem;
+        font-weight: 800;
+        font-family: ui-monospace, monospace;
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #f8fafc;
+    }
+    </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
@@ -184,49 +380,59 @@
 
 <!-- Cwallet Round Sync Console -->
         <div class="round-sync-bar card" id="round-sync-bar">
+            <!-- Dual-Phase Indicator HUD Tracker (15s Betting -> 5s Battle) -->
+            <div class="dual-phase-indicator-bar" id="dual-phase-indicator-bar">
+                <div class="phase-stage-card active-phase" id="stage-betting-card">
+                    <div class="phase-stage-badge">PHASE 1: BETTING (15s)</div>
+                    <div class="phase-stage-timer" id="stage-betting-timer">15s</div>
+                    <div class="phase-stage-desc">Place Bet • Sniper at T-5s</div>
+                </div>
+                <div class="phase-stage-vs">⚔️</div>
+                <div class="phase-stage-card" id="stage-battle-card">
+                    <div class="phase-stage-badge">PHASE 2: LIVE BATTLE (5s)</div>
+                    <div class="phase-stage-timer" id="stage-battle-timer">5s</div>
+                    <div class="phase-stage-desc">Combat In Play • Snapped Strike K</div>
+                </div>
+            </div>
+
             <!-- Top Controls Row -->
             <div class="round-sync-top-row">
                 <div class="round-info-left">
                     <div class="round-badge-row">
                         <span class="round-number-tag" id="round-num-display">ROUND #1</span>
-                        <span class="round-phase-badge phase-open" id="round-phase-badge">🟢 BETTING WINDOW OPEN</span>
-                        <span class="round-lock-countdown" id="round-lock-countdown">⏱️ LOCKS IN: 24s</span>
+                        <span class="round-phase-badge phase-open" id="round-phase-badge">🟢 BETTING PHASE (15s)</span>
+                        <span class="round-lock-countdown" id="round-lock-countdown">⏱️ BETTING CLOSES: 15s</span>
                     </div>
                     <div class="round-desc" id="round-instruction">
-                        Cwallet Sync: Analyzing 25 seconds of institutional order flow. Precision sniper prediction fires at EXACTLY 5s remaining on Cwallet timer.
+                        Cwallet 20s Dual-Phase Cycle: 15-second Betting Window followed by 5-second Live Battle. Official Sniper triggers at T-5s!
                     </div>
                 </div>
 
                 <div class="round-timer-center">
-                    <div class="timer-display" id="round-timer">30s</div>
-                    <span class="timer-sub">Cwallet Countdown</span>
+                    <div class="timer-display" id="round-timer">15s</div>
+                    <span class="timer-sub" id="round-timer-sub">Betting Countdown (15s)</span>
                 </div>
 
                 <div class="round-controls-right">
                     <div class="btn-group">
                         <span class="control-label">Round:</span>
-                        <button id="btn-round-30" class="btn-pill active">30s</button>
-                        <button id="btn-round-60" class="btn-pill">60s</button>
+                        <button id="btn-round-20" class="btn-pill active" title="Authoritative Cwallet 20s Cycle (15s Bet / 5s Battle)">20s (15s+5s)</button>
+                        <button id="btn-round-30" class="btn-pill" title="30s Epoch">30s</button>
+                        <button id="btn-round-60" class="btn-pill" title="60s Epoch">60s</button>
                         <span class="control-label" style="margin-left: 8px;">Alert Timing:</span>
-                        <button id="btn-lead-5" class="btn-pill active" style="border-color: #00e676; color: #00e676; font-weight: 800; box-shadow: 0 0 10px rgba(0,230,118,0.4);" title="Fires at EXACTLY 5s on Cwallet timer (Analyzes 25s of price action for maximum accuracy!)">🎯 Exactly 5s Ultra Sniper (Recommended)</button>
+                        <button id="btn-lead-5" class="btn-pill active" style="border-color: #00e676; color: #00e676; font-weight: 800; box-shadow: 0 0 10px rgba(0,230,118,0.4);" title="Fires at EXACTLY T-5s on Cwallet betting timer">🎯 Exactly 5s Ultra Sniper (Recommended)</button>
                         <button id="btn-lead-8" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8;" title="Fires at 8s remaining">8s Deep Sniper</button>
                         <button id="btn-lead-10" class="btn-pill" title="Fires at 10s remaining">10s Precision</button>
-                        <button id="btn-lead-15" class="btn-pill" title="Fires at 15s remaining">15s Early</button>
-                        <button id="btn-lead-18" class="btn-pill" title="Fires at 18s remaining">18s Early</button>
-                        <button id="btn-lead-20" class="btn-pill" title="Fires at 20s remaining">20s Early</button>
-                        <button id="btn-lead-12" class="btn-pill" title="12s before end">12s Standard</button>
-                        <button id="btn-lead-26" class="btn-pill" title="26s instant early">26s Instant</button>
                     </div>
                     <div class="btn-group sync-group-row">
                         <span class="control-label">⚡ 1-Click Sync Cwallet:</span>
-                        <button id="btn-sync-now" class="btn-pill btn-sync-action" style="border-color: #00e676; color: #00e676; font-weight: 800;" title="Tap the exact moment Cwallet round resets to 30s">⚡ Reset (30s)</button>
-                        <button id="btn-sync-20" class="btn-pill btn-sync-action" title="Click when Cwallet shows 20s">⚡ 20s</button>
-                        <button id="btn-sync-15" class="btn-pill btn-sync-action" title="Click when Cwallet shows 15s">⚡ 15s</button>
-                        <button id="btn-sync-10" class="btn-pill btn-sync-action" title="Click when Cwallet shows 10s">⚡ 10s</button>
-                        <button id="btn-sync-8" class="btn-pill btn-sync-action" title="Click when Cwallet shows 8s">8s</button>
+                        <button id="btn-sync-now" class="btn-pill btn-sync-action" style="border-color: #00e676; color: #00e676; font-weight: 800;" title="Tap the exact moment Cwallet 15s betting window starts">⚡ Sync 15s Bet Start</button>
+                        <button id="btn-sync-15" class="btn-pill btn-sync-action" title="Click when Cwallet shows 15s betting start">⚡ 15s</button>
+                        <button id="btn-sync-10" class="btn-pill btn-sync-action" title="Click when Cwallet shows 10s left">⚡ 10s</button>
                         <button id="btn-sync-5" class="btn-pill btn-sync-action" style="border-color: #00e676; color: #00e676; font-weight: 800;" title="Click when Cwallet shows 5s (Exact Sniper Trigger)">🎯 5s Sniper Mark</button>
+                        <button id="btn-sync-battle" class="btn-pill btn-sync-action" style="border-color: #f59e0b; color: #f59e0b; font-weight: 800;" title="Click when 5s Battle starts (Strike K snapped)">⚔️ Battle Start (5s)</button>
                         <button id="btn-show-bookmarklet" class="btn-pill" style="border-color: #c084fc; color: #c084fc; font-weight: 800;" title="1-Click Auto-Sync with Cwallet">🪄 Auto-Sync Script</button>
-                        <button id="btn-sync-epoch" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8;" title="Auto-lock to global Unix 30s/60s clock">🌐 Epoch Auto-Sync</button>
+                        <button id="btn-sync-epoch" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8;" title="Auto-lock to global Unix 20s/30s/60s clock">🌐 Epoch Auto-Sync</button>
                         <span id="sync-offset-pill" class="sub-badge" style="color: #38bdf8; font-weight: 700;">Offset: 0s</span>
                         <button id="btn-sync-minus" class="btn-pill" title="Subtract 1s">-1s</button>
                         <button id="btn-sync-plus" class="btn-pill" title="Add 1s">+1s</button>
@@ -246,13 +452,55 @@
                             1:1 CWALLET MARKET BATTLE SYNC
                         </div>
                         <div style="font-size: 11px; color: #94a3b8;">
-                            Tap the green button the moment Cwallet's round starts to lock 100% timer &amp; strike alignment!
+                            Tap the green button the moment Cwallet's 15s betting window starts to lock 100% timer, strike K &amp; battle alignment!
                         </div>
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                    <button onclick="document.getElementById('btn-sync-now').click()" style="background: linear-gradient(135deg, #10b981, #059669); color: white; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 900; font-size: 13px; cursor: pointer; box-shadow: 0 0 12px rgba(16, 185, 129, 0.4); text-transform: uppercase; letter-spacing: 0.5px;">⚡ TAP WHEN CWALLET STARTS (30s)</button>
+                    <button id="btn-master-sync-cockpit" onclick="document.getElementById('btn-sync-now').click()" style="background: linear-gradient(135deg, #10b981, #059669); color: white; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 900; font-size: 13px; cursor: pointer; box-shadow: 0 0 12px rgba(16, 185, 129, 0.4); text-transform: uppercase; letter-spacing: 0.5px;">⚡ SYNC CWALLET ROUND (20s Epoch: 15s Bet / 5s Battle)</button>
                     <button onclick="document.getElementById('btn-lock-strike').click()" style="background: #1e293b; color: #38bdf8; border: 1px solid #38bdf8; padding: 8px 12px; border-radius: 6px; font-weight: 700; font-size: 12px; cursor: pointer;" title="Snap live price as Strike">🔒 Snap Strike</button>
+                </div>
+            </div>
+
+            <!-- Live Battle Arena & Snapped Strike Price K Display -->
+            <div class="battle-arena-strip card" id="battle-arena-strip">
+                <div class="battle-arena-grid">
+                    <div class="battle-cell strike-cell">
+                        <span class="battle-cell-label">🎯 BATTLE STRIKE (K)</span>
+                        <span class="battle-cell-val" id="battle-strike-k-display">$--</span>
+                        <span class="battle-cell-sub" id="battle-strike-k-sub">Snapped at 0s of Betting (t_0)</span>
+                    </div>
+                    <div class="battle-cell live-cell">
+                        <span class="battle-cell-label">⚔️ LIVE BATTLE PRICE</span>
+                        <span class="battle-cell-val" id="battle-live-price-display">$--</span>
+                        <span class="battle-cell-sub" id="battle-live-delta-display">Δ $0.00 vs Strike K</span>
+                    </div>
+                    <div class="battle-cell phase-cell">
+                        <span class="battle-cell-label">COMBAT STATUS</span>
+                        <div class="battle-combat-badge" id="battle-combat-status-badge">🟢 BETTING PHASE (15s)</div>
+                        <span class="battle-cell-sub" id="battle-combat-sub">Sniper active at T-5s</span>
+                    </div>
+                    <div class="battle-cell outcome-cell">
+                        <span class="battle-cell-label">ROUND OUTCOME</span>
+                        <span class="battle-cell-val" id="battle-outcome-preview">PENDING</span>
+                        <span class="battle-cell-sub" id="battle-outcome-sub">Settle at 5s Battle End</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Round Outcome Settlement Banner (Settle Event Announcement) -->
+            <div class="round-settlement-banner card" id="round-settlement-banner" style="display: none;">
+                <div class="settle-banner-content">
+                    <div class="settle-header-row">
+                        <div class="settle-badge" id="settle-result-badge">🏆 ROUND #1 SETTLED: UP WINS</div>
+                        <button class="settle-close-btn" id="btn-close-settle" onclick="document.getElementById('round-settlement-banner').style.display='none'">✕</button>
+                    </div>
+                    <div class="settle-pills-row">
+                        <span class="settle-pill" id="settle-strike-k">STRIKE K: $--</span>
+                        <span class="settle-pill" id="settle-close-price">CLOSE: $--</span>
+                        <span class="settle-pill" id="settle-margin">MARGIN: $--</span>
+                        <span class="settle-pill" id="settle-bot-outcome">BOT: WIN 🏆</span>
+                    </div>
                 </div>
             </div>
 
@@ -723,6 +971,6 @@
         </div>
     </div> <!-- closes collapsible-math-section -->
 </div> <!-- closes container (app-container) -->
-    <script src="/static/app.js?v=51.0"></script>
+    <script src="/static/app.js?v=52.0"></script>
 </body>
 </html>

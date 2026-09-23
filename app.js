@@ -83,13 +83,21 @@ function formatCurrency(val, decimals = 2) {
     return `${sym}${num.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`;
 }
 
-// Cwallet Round State
-let roundDuration = 30; // 30s or 60s
-let roundSecondsLeft = 30;
+// Cwallet Round State - Authoritative 20s continuous epoch (15s Bet / 5s Battle)
+let roundDuration = 20; // 20s (15s bet + 5s battle), 30s or 60s
+let bettingDuration = 15;
+let battleDuration = 5;
+let roundSecondsLeft = 20;
+let phaseSecondsLeft = 15;
+let currentPhase = 'BETTING'; // 'BETTING' or 'BATTLE'
+let strikePriceK = null;
+let battleRoundSnapped = -1;
+let roundAuthoritativeLocked = false;
 let roundNumber = 1;
 let hasFiredRoundCall = false;
-let currentRoundBet = null; // { round, dir, entryPrice }
+let currentRoundBet = null; // { round, dir, entryPrice, strike, ... }
 let latestSignalData = null;
+let lastSettledRoundId = -1;
 
 // Cwallet Round Settlements
 let settledWins = 0;
@@ -101,12 +109,36 @@ let cooldownRoundsLeft = 0;
 // Cwallet Round Clock & Phase Controller (Epoch Locked + Sub-Second Precision)
 // ==========================================================================
 const timerDisplay = document.getElementById('round-timer');
+const roundTimerSub = document.getElementById('round-timer-sub');
 const roundNumDisplay = document.getElementById('round-num-display');
 const roundPhaseBadge = document.getElementById('round-phase-badge');
 const roundInstruction = document.getElementById('round-instruction');
 const roundLockCountdown = document.getElementById('round-lock-countdown');
 const syncOffsetPill = document.getElementById('sync-offset-pill');
 
+// Dual-Phase HUD Cards
+const stageBettingCard = document.getElementById('stage-betting-card');
+const stageBattleCard = document.getElementById('stage-battle-card');
+const stageBettingTimer = document.getElementById('stage-betting-timer');
+const stageBattleTimer = document.getElementById('stage-battle-timer');
+
+// Battle Arena Strip Elements
+const battleArenaStrip = document.getElementById('battle-arena-strip');
+const battleStrikeKDisplay = document.getElementById('battle-strike-k-display');
+const battleLivePriceDisplay = document.getElementById('battle-live-price-display');
+const battleLiveDeltaDisplay = document.getElementById('battle-live-delta-display');
+const battleCombatStatusBadge = document.getElementById('battle-combat-status-badge');
+const battleOutcomePreview = document.getElementById('battle-outcome-preview');
+
+// Round Settlement Banner Elements
+const roundSettlementBanner = document.getElementById('round-settlement-banner');
+const settleResultBadge = document.getElementById('settle-result-badge');
+const settleStrikeK = document.getElementById('settle-strike-k');
+const settleClosePrice = document.getElementById('settle-close-price');
+const settleMargin = document.getElementById('settle-margin');
+const settleBotOutcome = document.getElementById('settle-bot-outcome');
+
+const btnRound20 = document.getElementById('btn-round-20');
 const btnRound30 = document.getElementById('btn-round-30');
 const btnRound60 = document.getElementById('btn-round-60');
 const btnSyncMinus = document.getElementById('btn-sync-minus');
@@ -116,11 +148,13 @@ const syncInputSec = document.getElementById('sync-input-sec');
 const btnSyncSet = document.getElementById('btn-sync-set');
 const btnSyncReset = document.getElementById('btn-sync-reset');
 const btnSyncNow = document.getElementById('btn-sync-now');
+const btnMasterSyncCockpit = document.getElementById('btn-master-sync-cockpit');
 const btnSync20 = document.getElementById('btn-sync-20');
 const btnSync15 = document.getElementById('btn-sync-15');
 const btnSync10 = document.getElementById('btn-sync-10');
 const btnSync8 = document.getElementById('btn-sync-8');
 const btnSync5 = document.getElementById('btn-sync-5');
+const btnSyncBattle = document.getElementById('btn-sync-battle');
 
 const btnLockStrike = document.getElementById('btn-lock-strike');
 const syncInputStrike = document.getElementById('sync-input-strike');
@@ -192,6 +226,36 @@ function getSyncedSecondsLeft() {
     return left;
 }
 
+function getRoundPhaseAndTimes() {
+    const epochSec = Math.floor(Date.now() / 1000);
+    const pos = ((epochSec + syncOffset) % roundDuration + roundDuration) % roundDuration;
+    const rId = Math.floor((epochSec + syncOffset) / roundDuration);
+    let phase = 'BETTING';
+    let phaseSecLeft = 0;
+    
+    if (pos < bettingDuration) {
+        phase = 'BETTING';
+        phaseSecLeft = bettingDuration - pos;
+    } else {
+        phase = 'BATTLE';
+        phaseSecLeft = roundDuration - pos;
+    }
+    const rSecLeft = roundDuration - pos;
+    return { pos, rId, phase, phaseSecLeft, rSecLeft };
+}
+
+function syncDurationToServer(dur) {
+    const effectiveDur = (dur === 20 || dur === 30 || dur === 60) ? dur : 20;
+    fetch('/api/sync_cwallet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ round_duration: effectiveDur })
+    }).catch(e => console.warn('[syncDurationToServer Error]', e));
+    if (typeof socket !== 'undefined' && socket && socket.connected) {
+        socket.emit('sync_cwallet', { round_duration: effectiveDur });
+    }
+}
+
 function setSyncTargetSecond(val, alertMsg = null) {
     if (isNaN(val) || val < 1 || val > roundDuration) return;
     const epochSec = Math.floor(Date.now() / 1000);
@@ -199,11 +263,12 @@ function setSyncTargetSecond(val, alertMsg = null) {
     syncOffset = ((targetPos - (epochSec % roundDuration)) % roundDuration + roundDuration) % roundDuration;
     localStorage.setItem('cwallet_sync_offset', syncOffset);
     hasFiredRoundCall = false;
+    roundAuthoritativeLocked = false;
     currentRoundBet = null;
     roundSecondsLeft = val;
     updateSyncOffsetDisplay();
 
-    // If syncing to round start (30s / 60s), instantly lock current price as the round strike!
+    // If syncing to round start (20s / 15s bet start), instantly lock current price as round strike!
     if (val === roundDuration && lastPrice) {
         cwalletRoundOpenPrice = lastPrice;
         if (cwalletOpenPriceDisplay) {
@@ -235,21 +300,46 @@ function setSyncTargetSecond(val, alertMsg = null) {
     renderMainSignalCard(latestSignalData);
 }
 
+if (btnRound20) {
+    btnRound20.addEventListener('click', () => {
+        roundDuration = 20;
+        bettingDuration = 15;
+        battleDuration = 5;
+        btnRound20.classList.add('active');
+        if (btnRound30) btnRound30.classList.remove('active');
+        if (btnRound60) btnRound60.classList.remove('active');
+        hasFiredRoundCall = false;
+        roundAuthoritativeLocked = false;
+        syncDurationToServer(20);
+        speakTacticalAlert("20s battle cycle selected. 15s betting, 5s battle.");
+    });
+}
+
 if (btnRound30) {
     btnRound30.addEventListener('click', () => {
         roundDuration = 30;
+        bettingDuration = 25;
+        battleDuration = 5;
         btnRound30.classList.add('active');
+        if (btnRound20) btnRound20.classList.remove('active');
         if (btnRound60) btnRound60.classList.remove('active');
         hasFiredRoundCall = false;
+        roundAuthoritativeLocked = false;
+        syncDurationToServer(30);
     });
 }
 
 if (btnRound60) {
     btnRound60.addEventListener('click', () => {
         roundDuration = 60;
+        bettingDuration = 55;
+        battleDuration = 5;
         btnRound60.classList.add('active');
+        if (btnRound20) btnRound20.classList.remove('active');
         if (btnRound30) btnRound30.classList.remove('active');
         hasFiredRoundCall = false;
+        roundAuthoritativeLocked = false;
+        syncDurationToServer(60);
     });
 }
 
@@ -308,7 +398,15 @@ if (btnSyncReset) {
 
 if (btnSyncNow) {
     btnSyncNow.addEventListener('click', () => {
-        setSyncTargetSecond(roundDuration, `Synced to round start ${roundDuration} seconds.`);
+        setSyncTargetSecond(roundDuration, `Synced to 15s Betting Start (${roundDuration}s Epoch).`);
+        currentRoundBet = null;
+        lastRecordedSec = -1;
+    });
+}
+
+if (btnMasterSyncCockpit) {
+    btnMasterSyncCockpit.addEventListener('click', () => {
+        setSyncTargetSecond(roundDuration, `Synced to 15s Betting Start (${roundDuration}s Epoch).`);
         currentRoundBet = null;
         lastRecordedSec = -1;
     });
@@ -316,13 +414,13 @@ if (btnSyncNow) {
 
 if (btnSync20) {
     btnSync20.addEventListener('click', () => {
-        setSyncTargetSecond(20, 'Synced to 20 seconds.');
+        setSyncTargetSecond(20, 'Synced to 20 seconds (Round Start).');
     });
 }
 
 if (btnSync15) {
     btnSync15.addEventListener('click', () => {
-        setSyncTargetSecond(15, 'Synced to 15 seconds.');
+        setSyncTargetSecond(roundDuration, 'Synced to 15s betting start.');
     });
 }
 
@@ -334,13 +432,19 @@ if (btnSync10) {
 
 if (btnSync8) {
     btnSync8.addEventListener('click', () => {
-        setSyncTargetSecond(8, 'Synced to 8 seconds sniper alert.');
+        setSyncTargetSecond(8, 'Synced to 8 seconds.');
     });
 }
 
 if (btnSync5) {
     btnSync5.addEventListener('click', () => {
-        setSyncTargetSecond(5, 'Synced to 5 seconds lock.');
+        setSyncTargetSecond(5, 'Synced to 5 seconds Sniper Mark.');
+    });
+}
+
+if (btnSyncBattle) {
+    btnSyncBattle.addEventListener('click', () => {
+        setSyncTargetSecond(battleDuration, 'Synced to 5s Battle Start (Strike Snapped).');
     });
 }
 
@@ -622,6 +726,28 @@ function playCountdownBeep(freq, duration = 0.08) {
     } catch (e) {}
 }
 
+function playTriumphFanfare() {
+    if (!isSoundEnabled) return;
+    try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6 triumph arpeggio
+        notes.forEach((freq, idx) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, now + idx * 0.1);
+            gain.setValueAtTime(0.22, now + idx * 0.1);
+            gain.exponentialRampToValueAtTime(0.001, now + idx * 0.1 + 0.28);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(now + idx * 0.1);
+            osc.stop(now + idx * 0.1 + 0.28);
+        });
+    } catch (e) {}
+}
+
 // Sub-second precision loop (ticks every 250ms)
 let lastRecordedSec = -1;
 let currentRoundId = -1;
@@ -638,26 +764,40 @@ setInterval(() => {
     }
 
     const roundId = getEpochRoundId();
-    const currentLeft = getSyncedSecondsLeft();
+    const { pos, rId, phase, phaseSecLeft, rSecLeft } = getRoundPhaseAndTimes();
+    currentPhase = phase;
+    phaseSecondsLeft = phaseSecLeft;
+    roundSecondsLeft = rSecLeft;
 
     // Authoritative rollover check: immune to background tab suspension
-    if (currentRoundId !== -1 && roundId !== currentRoundId) {
+    if (currentRoundId !== -1 && rId !== currentRoundId) {
         settleCurrentCwalletRound();
         roundNumber++;
         hasFiredRoundCall = false;
+        roundAuthoritativeLocked = false;
         currentRoundBet = null;
+        strikePriceK = null;
+        battleRoundSnapped = -1;
         cwalletRoundOpenPrice = lastPrice || (latestSignalData ? latestSignalData.price : null);
-        currentRoundId = roundId;
+        currentRoundId = rId;
     } else if (currentRoundId === -1) {
-        currentRoundId = roundId;
+        currentRoundId = rId;
     }
 
     if (cwalletRoundOpenPrice === null && lastPrice) {
         cwalletRoundOpenPrice = lastPrice;
     }
 
-    lastRecordedSec = currentLeft;
-    roundSecondsLeft = currentLeft;
+    // Strike Price K Snapping at Battle Start Boundary (t_0)
+    if (phase === 'BATTLE') {
+        if (strikePriceK === null || battleRoundSnapped !== rId) {
+            strikePriceK = lastPrice || cwalletRoundOpenPrice;
+            battleRoundSnapped = rId;
+            setChartStrikeLine(strikePriceK, currentRoundBet ? currentRoundBet.dir : 'WAIT');
+        }
+    }
+
+    lastRecordedSec = roundSecondsLeft;
 
     // Update Cwallet Open Strike & Live Round Delta HUD
     if (cwalletOpenPriceDisplay) {
@@ -671,25 +811,37 @@ setInterval(() => {
     }
 
     // 3-2-1 Anticipatory Audio Countdown Cues
-    const timeToCall = roundSecondsLeft - callLeadTime;
-    if (timeToCall === 3) {
-        playCountdownBeep(440, 0.08); // 3s warning: A4 (low)
-    } else if (timeToCall === 2) {
-        playCountdownBeep(554.37, 0.08); // 2s warning: C#5 (mid)
-    } else if (timeToCall === 1) {
-        playCountdownBeep(659.25, 0.08); // 1s warning: E5 (high)
-    }
-
-    // Precision sniper trigger: fires at EXACTLY callLeadTime (default 5s)
-    const fallbackThreshold = callLeadTime;
-    if (roundSecondsLeft <= fallbackThreshold && roundSecondsLeft >= 1 && !hasFiredRoundCall) {
-        const dispatched = dispatchCwalletRoundCall();
-        if (dispatched) {
-            hasFiredRoundCall = true;
+    if (phase === 'BETTING') {
+        const timeToSniper = Math.ceil(phaseSecondsLeft) - callLeadTime;
+        if (timeToSniper === 3) {
+            playCountdownBeep(440, 0.08); // 3s warning: A4 (low)
+        } else if (timeToSniper === 2) {
+            playCountdownBeep(554.37, 0.08); // 2s warning: C#5 (mid)
+        } else if (timeToSniper === 1) {
+            playCountdownBeep(659.25, 0.08); // 1s warning: E5 (high)
+        }
+    } else if (phase === 'BATTLE') {
+        const battleLeft = Math.ceil(phaseSecondsLeft);
+        if (battleLeft === 3) {
+            playCountdownBeep(554.37, 0.08);
+        } else if (battleLeft === 2) {
+            playCountdownBeep(659.25, 0.08);
+        } else if (battleLeft === 1) {
+            playCountdownBeep(880, 0.1);
         }
     }
 
-    updateRoundHUD();
+    // Precision sniper trigger: Server socket event `cwallet_sniper_call` is authoritative.
+    // Client fallback only acts as emergency safety if server did not emit and betting phase has <= 1s remaining.
+    if (phase === 'BETTING' && phaseSecondsLeft <= 1.0 && phaseSecondsLeft >= 0.2 && !hasFiredRoundCall && !roundAuthoritativeLocked) {
+        const dispatched = dispatchCwalletRoundCall(null, true);
+        if (dispatched) {
+            hasFiredRoundCall = true;
+            roundAuthoritativeLocked = true;
+        }
+    }
+
+    updateRoundHUD(phase);
     renderMainSignalCard(latestSignalData);
 }, 250);
 
@@ -712,13 +864,35 @@ if (typeof socket !== 'undefined' && socket) {
             }
             roundNumber = rState.round_number;
             hasFiredRoundCall = false;
+            roundAuthoritativeLocked = false;
             currentRoundBet = null;
+            strikePriceK = null;
+            battleRoundSnapped = -1;
         }
-        roundDuration = rState.round_duration;
+        if (rState.round_duration) {
+            roundDuration = rState.round_duration;
+            if (roundDuration === 20) {
+                bettingDuration = 15;
+                battleDuration = 5;
+            }
+        }
         
+        if (rState.phase) {
+            currentPhase = rState.phase;
+        }
+        if (rState.phase_seconds_left !== undefined) {
+            phaseSecondsLeft = rState.phase_seconds_left;
+        }
+        if (rState.round_seconds_left !== undefined) {
+            roundSecondsLeft = rState.round_seconds_left;
+        }
+        if (rState.strike_price && rState.strike_price > 0) {
+            strikePriceK = rState.strike_price;
+            syncChartWithCwalletStrike(strikePriceK);
+        }
         if (rState.round_open_price && rState.round_open_price > 0) {
             cwalletRoundOpenPrice = rState.round_open_price;
-            syncChartWithCwalletStrike(cwalletRoundOpenPrice);
+            if (!strikePriceK) syncChartWithCwalletStrike(cwalletRoundOpenPrice);
             if (cwalletOpenPriceDisplay) {
                 cwalletOpenPriceDisplay.textContent = `$${cwalletRoundOpenPrice.toFixed(2)}`;
             }
@@ -731,13 +905,24 @@ if (typeof socket !== 'undefined' && socket) {
                 localStorage.setItem('cwallet_sync_offset', syncOffset);
             }
         }
-        
-        if (rState.seconds_left !== undefined && rState.seconds_left > 0) {
-            roundSecondsLeft = rState.seconds_left;
-        }
 
         updateSyncOffsetDisplay();
         updateRoundHUD(rState.phase);
+
+        // Check if server indicated round settlement
+        if (rState.is_battle_settled && rState.settled_outcome) {
+            handleRoundSettledEvent({
+                round_id: rState.round_id,
+                strike: rState.settled_strike,
+                close_price: rState.settled_close,
+                outcome: rState.settled_outcome === 1 ? 'UP' : (rState.settled_outcome === -1 ? 'DOWN' : 'TIE')
+            });
+        }
+    });
+
+    socket.on('cwallet_round_settled', (settleData) => {
+        if (!settleData) return;
+        handleRoundSettledEvent(settleData);
     });
 
     function updateEarlyRadarVisual(data) {
@@ -764,11 +949,12 @@ if (typeof socket !== 'undefined' && socket) {
             return;
         }
         // IMMUTABLE ROUND LOCK: Once a call has been placed for this round, strictly lock and forbid any changes or flips
-        if (hasFiredRoundCall && currentRoundBet && currentRoundBet.round === roundNumber) {
+        if (roundAuthoritativeLocked && currentRoundBet && currentRoundBet.round === roundNumber) {
             return;
         }
         hasFiredRoundCall = true;
-        dispatchCwalletRoundCall(sniperData);
+        roundAuthoritativeLocked = true;
+        dispatchCwalletRoundCall(sniperData, false);
     });
 
     socket.on('chambering_prep', (data) => {
@@ -801,60 +987,195 @@ if (typeof socket !== 'undefined' && socket) {
     });
 }
 
+function handleRoundSettledEvent(settleData) {
+    if (!settleData) return;
+    const rId = settleData.round_id || settleData.round_number || roundNumber;
+    if (lastSettledRoundId === rId) return; // Prevent duplicate handling
+    lastSettledRoundId = rId;
+
+    const strike = settleData.strike || settleData.strike_price || strikePriceK || cwalletRoundOpenPrice || lastPrice;
+    const closeP = settleData.close_price || settleData.close || lastPrice;
+    let outcome = settleData.outcome;
+    if (!outcome) {
+        if (closeP > strike) outcome = 'UP';
+        else if (closeP < strike) outcome = 'DOWN';
+        else outcome = 'TIE';
+    }
+    const isWon = settleData.won !== undefined ? Boolean(settleData.won) : (currentRoundBet ? (currentRoundBet.dir === outcome) : false);
+
+    // Update Round Settlement Banner
+    const banner = document.getElementById('round-settlement-banner');
+    const badge = document.getElementById('settle-result-badge');
+    const strikeEl = document.getElementById('settle-strike-k');
+    const closeEl = document.getElementById('settle-close-price');
+    const marginEl = document.getElementById('settle-margin');
+    const botEl = document.getElementById('settle-bot-outcome');
+
+    const margin = (closeP && strike) ? (closeP - strike) : 0;
+    const marginStr = `${margin >= 0 ? '+' : ''}$${margin.toFixed(2)}`;
+
+    if (banner) {
+        banner.style.display = 'block';
+        if (currentRoundBet && (currentRoundBet.dir === 'PASS' || currentRoundBet.isShielded)) {
+            banner.className = 'round-settlement-banner tie';
+            if (badge) badge.textContent = `🛡️ ROUND #${rId} SETTLED: ${outcome} (${marginStr}) — CAPITAL SHIELD PASS`;
+            if (botEl) botEl.textContent = 'BOT: SHIELD PASS 🛡️';
+        } else if (isWon) {
+            banner.className = 'round-settlement-banner';
+            if (badge) badge.textContent = `🏆 ROUND #${rId} SETTLED: ${outcome} WINS (${marginStr})`;
+            if (botEl) botEl.textContent = 'BOT: WIN 🏆';
+            settledWins++;
+            consecutiveLosses = 0;
+            speakTacticalAlert(`Round ${rId} settled: Win confirmed!`);
+            playTriumphFanfare();
+        } else if (outcome === 'TIE') {
+            banner.className = 'round-settlement-banner tie';
+            if (badge) badge.textContent = `⚪ ROUND #${rId} SETTLED: TIE (${marginStr})`;
+            if (botEl) botEl.textContent = 'BOT: TIE ⚪';
+            speakTacticalAlert(`Round ${rId} ended in tie.`);
+        } else {
+            banner.className = 'round-settlement-banner loss';
+            if (badge) badge.textContent = `❌ ROUND #${rId} SETTLED: ${outcome} (${marginStr})`;
+            if (botEl) botEl.textContent = 'BOT: LOSS ❌';
+            settledLosses++;
+            consecutiveLosses++;
+            speakTacticalAlert(`Round ${rId} settled: Loss registered.`);
+        }
+
+        if (strikeEl) strikeEl.textContent = `STRIKE K: $${strike ? Number(strike).toFixed(2) : '--'}`;
+        if (closeEl) closeEl.textContent = `CLOSE: $${closeP ? Number(closeP).toFixed(2) : '--'}`;
+        if (marginEl) marginEl.textContent = `MARGIN: ${marginStr}`;
+
+        // Auto-dismiss banner after 8 seconds
+        setTimeout(() => {
+            if (banner) banner.style.display = 'none';
+        }, 8000);
+    }
+
+    // Update Win Rate HUD
+    const total = settledWins + settledLosses;
+    const wr = total > 0 ? ((settledWins / total) * 100).toFixed(1) : '0.0';
+    const statWinRate = document.getElementById('stat-win-rate');
+    const statRecord = document.getElementById('stat-record');
+    if (statWinRate) statWinRate.textContent = `${wr}%`;
+    if (statRecord) statRecord.textContent = `${settledWins}W / ${settledLosses}L`;
+
+    // Record into history table
+    const botCall = currentRoundBet ? (currentRoundBet.isShielded ? 'SHIELD PASS' : `BET ${currentRoundBet.dir}`) : 'WATCH';
+    const botConf = currentRoundBet ? `${currentRoundBet.conf}%` : '--';
+    const resultStr = (currentRoundBet && currentRoundBet.isShielded) ? '⚪ PASS' : (isWon ? '🏆 WIN' : (outcome === 'TIE' ? '⚪ TIE' : '❌ LOSS'));
+    recordRoundHistory(rId, botCall, botConf, closeP, resultStr);
+}
+
 function updateRoundHUD(serverPhase = null) {
-    timerDisplay.textContent = `${roundSecondsLeft}s`;
+    const activeP = serverPhase || currentPhase || 'BETTING';
     roundNumDisplay.textContent = `ROUND #${roundNumber}`;
 
-    const cwalletSecsToLock = Math.max(0, roundSecondsLeft - CWALLET_LOCK_BUFFER);
-
-    // Update Round Lock Countdown Badge
-    if (roundLockCountdown) {
-        if (roundSecondsLeft > CWALLET_LOCK_BUFFER) {
-            if (roundSecondsLeft <= callLeadTime) {
-                roundLockCountdown.className = 'round-lock-countdown urgent';
-                roundLockCountdown.textContent = `⏱️ LOCKS IN: ${cwalletSecsToLock}s (BET NOW!)`;
-            } else {
-                roundLockCountdown.className = 'round-lock-countdown';
-                roundLockCountdown.textContent = `⏱️ CWALLET LOCKS IN: ${cwalletSecsToLock}s`;
-            }
+    // Update Dual-Phase Indicator Bar
+    if (stageBettingCard && stageBattleCard && stageBettingTimer && stageBattleTimer) {
+        if (activeP === 'BETTING') {
+            stageBettingCard.className = 'phase-stage-card active-phase';
+            stageBattleCard.className = 'phase-stage-card';
+            stageBettingTimer.textContent = `${Math.max(0, Math.ceil(phaseSecondsLeft))}s`;
+            stageBattleTimer.textContent = '5s';
         } else {
-            roundLockCountdown.className = 'round-lock-countdown locked';
-            roundLockCountdown.textContent = `🔒 BETTING LOCKED (${roundSecondsLeft}s)`;
+            stageBettingCard.className = 'phase-stage-card';
+            stageBattleCard.className = 'phase-stage-card active-battle';
+            stageBettingTimer.textContent = 'CLOSED';
+            stageBattleTimer.textContent = `${Math.max(0, Math.ceil(phaseSecondsLeft))}s`;
         }
     }
 
-    if (roundSecondsLeft > callLeadTime) {
-        // Betting preparation / data accumulation phase (T-30s down to T-6s)
-        timerDisplay.style.color = '#38bdf8';
-        
-        const openStrike = cwalletRoundOpenPrice || (latestSignalData && latestSignalData.barrier_model ? latestSignalData.barrier_model.k : null) || lastPrice || 0;
-        const curP = lastPrice || openStrike;
-        const dStrike = openStrike > 0 ? (curP - openStrike) : 0;
-        const dStr = (dStrike >= 0 ? '+' : '') + '$' + dStrike.toFixed(2);
-        const secsUntilSniper = Math.max(0, roundSecondsLeft - callLeadTime);
+    // Update Central Timer Display
+    const secDisp = Math.max(0, Math.ceil(phaseSecondsLeft));
+    timerDisplay.textContent = `${secDisp}s`;
 
-        roundPhaseBadge.className = 'round-phase-badge phase-open';
-        roundPhaseBadge.textContent = `⏳ ACCUMULATING DATA (Δ ${dStr})`;
-        roundInstruction.innerHTML = `Analyzing 25s order flow & depth ladder vs Strike $${openStrike.toFixed(2)} (${dStr}). <strong style="color: #38bdf8;">Official Sniper Prediction triggers at EXACTLY ${callLeadTime}s mark on Cwallet timer!</strong> (<span style="color: #00e676; font-weight:800;">${secsUntilSniper}s to trigger</span>)`;
-    } else if (roundSecondsLeft > CWALLET_LOCK_BUFFER) {
-        // Critical Execution Phase (Place Bet Now on Cwallet at 5s!)
-        roundPhaseBadge.className = 'round-phase-badge phase-trigger';
-        roundPhaseBadge.textContent = '⚡ PLACE BET ON CWALLET NOW!';
-        timerDisplay.style.color = '#ff1744';
-        const curBetDir = currentRoundBet ? currentRoundBet.dir : (latestSignalData ? latestSignalData.direction : 'WAIT');
-        if (curBetDir === 'UP') {
-            roundInstruction.innerHTML = `<strong style="color: #00e676; font-size: 1.1em;">🟢 BET UP (CALL) NOW ON CWALLET!</strong> Tap GREEN button now. Round locks in ${cwalletSecsToLock}s!`;
-        } else if (curBetDir === 'DOWN') {
-            roundInstruction.innerHTML = `<strong style="color: #ff1744; font-size: 1.1em;">🔴 BET DOWN (PUT) NOW ON CWALLET!</strong> Tap RED button now. Round locks in ${cwalletSecsToLock}s!`;
+    if (roundTimerSub) {
+        roundTimerSub.textContent = activeP === 'BATTLE' ? '⚔️ Combat Battle (5s)' : 'Betting Countdown (15s)';
+    }
+
+    // Update Battle Arena Strip elements
+    const kVal = strikePriceK || cwalletRoundOpenPrice || (latestSignalData && latestSignalData.barrier_model ? latestSignalData.barrier_model.k : null) || lastPrice;
+    if (battleStrikeKDisplay) {
+        battleStrikeKDisplay.textContent = kVal ? `$${Number(kVal).toFixed(2)}` : '$--';
+    }
+    if (battleLivePriceDisplay) {
+        battleLivePriceDisplay.textContent = lastPrice ? `$${Number(lastPrice).toFixed(2)}` : '$--';
+    }
+    if (battleLiveDeltaDisplay && lastPrice && kVal) {
+        const d = lastPrice - kVal;
+        const dSign = d >= 0 ? '+' : '';
+        battleLiveDeltaDisplay.textContent = `Δ ${dSign}$${d.toFixed(2)} vs K`;
+        battleLiveDeltaDisplay.style.color = d > 0 ? '#00e676' : (d < 0 ? '#ff1744' : '#94a3b8');
+    }
+    if (battleCombatStatusBadge) {
+        if (activeP === 'BATTLE') {
+            battleCombatStatusBadge.className = 'battle-combat-badge combat-live';
+            battleCombatStatusBadge.textContent = `⚔️ LIVE BATTLE (${secDisp}s)`;
         } else {
-            roundInstruction.innerHTML = `<strong style="color: #94a3b8; font-size: 1.1em;">🛡️ CAPITAL SHIELD: PASS THIS ROUND.</strong> Sub-clearance chop noise — preserve capital for next round.`;
+            battleCombatStatusBadge.className = 'battle-combat-badge';
+            battleCombatStatusBadge.textContent = `🟢 BETTING PHASE (${secDisp}s)`;
+        }
+    }
+    if (battleOutcomePreview && kVal && lastPrice) {
+        const d = lastPrice - kVal;
+        if (activeP === 'BATTLE') {
+            if (currentRoundBet && currentRoundBet.dir === 'UP') {
+                battleOutcomePreview.textContent = d > 0 ? 'WINNING 🟢' : (d < 0 ? 'LOSING 🔴' : 'TIE ⚪');
+                battleOutcomePreview.style.color = d > 0 ? '#00e676' : '#ff1744';
+            } else if (currentRoundBet && currentRoundBet.dir === 'DOWN') {
+                battleOutcomePreview.textContent = d < 0 ? 'WINNING 🟢' : (d > 0 ? 'LOSING 🔴' : 'TIE ⚪');
+                battleOutcomePreview.style.color = d < 0 ? '#00e676' : '#ff1744';
+            } else {
+                battleOutcomePreview.textContent = d > 0 ? 'UP LEADING ▲' : (d < 0 ? 'DOWN LEADING ▼' : 'TIE ⚪');
+                battleOutcomePreview.style.color = d > 0 ? '#00e676' : (d < 0 ? '#ff1744' : '#94a3b8');
+            }
+        } else {
+            battleOutcomePreview.textContent = currentRoundBet ? `BET ${currentRoundBet.dir}` : 'PENDING';
+            battleOutcomePreview.style.color = '#38bdf8';
+        }
+    }
+
+    if (activeP === 'BETTING') {
+        if (phaseSecondsLeft > callLeadTime) {
+            // T-15s to T-6s: Data Accumulation
+            timerDisplay.style.color = '#38bdf8';
+            roundPhaseBadge.className = 'round-phase-badge phase-open';
+            roundPhaseBadge.textContent = `🟢 BETTING PHASE (${secDisp}s)`;
+            if (roundLockCountdown) {
+                roundLockCountdown.className = 'round-lock-countdown';
+                roundLockCountdown.textContent = `⏱️ BETTING CLOSES: ${secDisp}s`;
+            }
+            const secsUntilSniper = Math.max(0, Math.ceil(phaseSecondsLeft - callLeadTime));
+            roundInstruction.innerHTML = `Cwallet 20s Cycle: 15s Betting window open. <strong style="color: #38bdf8;">Official Sniper Prediction triggers at T-5s mark!</strong> (<span style="color: #00e676; font-weight:800;">${secsUntilSniper}s to trigger</span>)`;
+        } else {
+            // T-5s to 0s: Sniper Execution Window
+            timerDisplay.style.color = '#ff1744';
+            roundPhaseBadge.className = 'round-phase-badge phase-trigger';
+            roundPhaseBadge.textContent = '⚡ PLACE BET ON CWALLET NOW!';
+            if (roundLockCountdown) {
+                roundLockCountdown.className = 'round-lock-countdown urgent';
+                roundLockCountdown.textContent = `⏱️ LOCKS IN: ${secDisp}s (BET NOW!)`;
+            }
+            const curBetDir = currentRoundBet ? currentRoundBet.dir : (latestSignalData ? latestSignalData.direction : 'WAIT');
+            if (curBetDir === 'UP') {
+                roundInstruction.innerHTML = `<strong style="color: #00e676; font-size: 1.1em;">🟢 BET UP (CALL) NOW ON CWALLET!</strong> Tap GREEN button now. Round locks in ${secDisp}s!`;
+            } else if (curBetDir === 'DOWN') {
+                roundInstruction.innerHTML = `<strong style="color: #ff1744; font-size: 1.1em;">🔴 BET DOWN (PUT) NOW ON CWALLET!</strong> Tap RED button now. Round locks in ${secDisp}s!`;
+            } else {
+                roundInstruction.innerHTML = `<strong style="color: #94a3b8; font-size: 1.1em;">🛡️ CAPITAL SHIELD: PASS THIS ROUND.</strong> Sub-clearance chop noise — preserve capital for next round.`;
+            }
         }
     } else {
-        // Lock & evaluate
-        roundPhaseBadge.className = 'round-phase-badge phase-locked';
-        roundPhaseBadge.textContent = '🔒 CWALLET LOCKED (IN PLAY)';
-        timerDisplay.style.color = '#94a3b8';
-        roundInstruction.textContent = `Round locked on Cwallet. Tracking live settlement against open strike...`;
+        // Battle Phase (5s -> 0s)
+        timerDisplay.style.color = '#f59e0b';
+        roundPhaseBadge.className = 'round-phase-badge phase-battle';
+        roundPhaseBadge.textContent = `⚔️ LIVE BATTLE IN PLAY (${secDisp}s)`;
+        if (roundLockCountdown) {
+            roundLockCountdown.className = 'round-lock-countdown locked';
+            roundLockCountdown.textContent = `⚔️ BATTLE IN PLAY (${secDisp}s)`;
+        }
+        roundInstruction.innerHTML = `<strong style="color: #fbbf24; font-size: 1.05em;">⚔️ LIVE BATTLE ACTIVE:</strong> Snapped Strike K: <strong>$${kVal ? Number(kVal).toFixed(2) : '--'}</strong>. Evaluating forward 5s trajectory against K.`;
     }
 }
 
@@ -863,13 +1184,19 @@ function updateRoundHUD(serverPhase = null) {
 // ==========================================================================
 let lastSpokenRoundNumber = -1;
 
-function dispatchCwalletRoundCall(serverCall = null) {
+function dispatchCwalletRoundCall(serverCall = null, isFallback = false) {
     if (activeMarketType !== 'crypto') return false;
     // IMMUTABLE ROUND LOCK: Once an authoritative server call has locked this round, never override or flip
-    if (hasFiredRoundCall && currentRoundBet && currentRoundBet.round === roundNumber && !currentRoundBet.isFallback) {
+    if (roundAuthoritativeLocked && currentRoundBet && currentRoundBet.round === roundNumber && !currentRoundBet.isFallback) {
+        return false;
+    }
+    if (isFallback && hasFiredRoundCall && currentRoundBet && currentRoundBet.round === roundNumber) {
         return false;
     }
     hasFiredRoundCall = true;
+    if (!isFallback) {
+        roundAuthoritativeLocked = true;
+    }
     if (!latestSignalData && !lastPrice && !serverCall) return false;
 
     const data = serverCall || latestSignalData || {};
@@ -933,7 +1260,7 @@ function dispatchCwalletRoundCall(serverCall = null) {
             isZeroDefect: false,
             kelly: '0x PASS',
             strength: (serverCall && serverCall.strength) ? serverCall.strength : '',
-            isFallback: !serverCall
+            isFallback: isFallback || !serverCall
         };
         // Silent PASS: do NOT spam notifications or voice alerts on non-actionable chop rounds
         renderMainSignalCard(latestSignalData);
@@ -955,7 +1282,7 @@ function dispatchCwalletRoundCall(serverCall = null) {
             isGodMode: false, 
             isZeroDefect: false,
             kelly: '0x PASS',
-            isFallback: !serverCall
+            isFallback: isFallback || !serverCall
         };
         renderMainSignalCard(latestSignalData);
         updateCwalletAreaHero();
@@ -1004,7 +1331,8 @@ function dispatchCwalletRoundCall(serverCall = null) {
         isEarlyRadar: isEarlyRadar,
         isApex: isApexLock,
         isUpgrade: isDynamicUpgrade,
-        isReversal: isDynamicReversal
+        isReversal: isDynamicReversal,
+        isFallback: isFallback || !serverCall
     };
 
     const headerPrefix = isDynamicReversal 
@@ -1054,59 +1382,20 @@ function dispatchCwalletRoundCall(serverCall = null) {
 function settleCurrentCwalletRound() {
     clearChartStrikeLine();
     if (activeMarketType !== 'crypto') return;
+    if (lastSettledRoundId === roundNumber) return; // Already settled via authoritative server event
 
-    if (!currentRoundBet || currentRoundBet.dir === 'PASS' || currentRoundBet.dir === 'WAIT' || currentRoundBet.dir === 'SKIP') {
-        const passReason = (currentRoundBet && currentRoundBet.isShielded) ? 'SHIELD PASS' : 'SKIPPED (PASS)';
-        recordRoundHistory(roundNumber, passReason, '--', lastPrice, '⚪ PASS');
-        return;
-    }
+    const currentPrice = lastPrice || (currentRoundBet ? currentRoundBet.entry : 0);
+    const strike = strikePriceK || (currentRoundBet ? currentRoundBet.strike : null) || cwalletRoundOpenPrice || currentPrice;
+    let outcome = 'TIE';
+    if (currentPrice > strike) outcome = 'UP';
+    else if (currentPrice < strike) outcome = 'DOWN';
 
-    const currentPrice = lastPrice || currentRoundBet.entry;
-    const strike = currentRoundBet.strike || cwalletRoundOpenPrice || currentRoundBet.entry;
-    let result = 'LOSS';
-    let won = false;
-
-    if (currentRoundBet.dir === 'UP') {
-        won = currentPrice > strike;
-    } else if (currentRoundBet.dir === 'DOWN') {
-        won = currentPrice < strike;
-    } else {
-        // Any non-directional call must never be treated as a loss
-        recordRoundHistory(currentRoundBet.round, 'PASS', '--', currentPrice, '⚪ PASS');
-        return;
-    }
-
-    if (currentPrice !== strike) {
-        if (won) {
-            settledWins++;
-            consecutiveLosses = 0;
-            result = '🏆 WIN';
-            speakTacticalAlert("Win confirmed! Settled in the money.");
-        } else {
-            settledLosses++;
-            consecutiveLosses++;
-            result = '❌ LOSS';
-            speakTacticalAlert("Loss registered. Re-calibrating microstructure.");
-        }
-    } else {
-        result = '⚪ TIE';
-    }
-
-    recordRoundHistory(
-        currentRoundBet.round,
-        `BET ${currentRoundBet.dir}`,
-        `${currentRoundBet.conf}%`,
-        currentPrice,
-        result
-    );
-
-    // Update Win Rate HUD
-    const total = settledWins + settledLosses;
-    const wr = total > 0 ? ((settledWins / total) * 100).toFixed(1) : '0.0';
-    const statWinRate = document.getElementById('stat-win-rate');
-    const statRecord = document.getElementById('stat-record');
-    if (statWinRate) statWinRate.textContent = `${wr}%`;
-    if (statRecord) statRecord.textContent = `${settledWins}W / ${settledLosses}L`;
+    handleRoundSettledEvent({
+        round_id: roundNumber,
+        strike: strike,
+        close_price: currentPrice,
+        outcome: outcome
+    });
 }
 
 function recordRoundHistory(rnd, call, conf, price, result) {

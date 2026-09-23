@@ -18,3 +18,4 @@ COPY --chown=user:user . .
 EXPOSE 7860
 
 CMD ["python", "bot.py", "--no-browser", "--host", "0.0.0.0"]
+
