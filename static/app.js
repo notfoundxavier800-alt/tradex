@@ -832,8 +832,10 @@ setInterval(() => {
     }
 
     // Precision sniper trigger: Server socket event `cwallet_sniper_call` is authoritative.
-    // Client fallback only acts as emergency safety if server did not emit and betting phase has <= 1s remaining.
-    if (phase === 'BETTING' && phaseSecondsLeft <= 1.0 && phaseSecondsLeft >= 0.2 && !hasFiredRoundCall && !roundAuthoritativeLocked) {
+    // Client instant trigger: At EXACTLY 5 seconds on the countdown timer (phaseSecondsLeft <= callLeadTime),
+    // fire immediately if server socket has not already fired, ensuring zero latency on the 5s mark!
+    const effectiveLeadTime = callLeadTime || 5;
+    if (phase === 'BETTING' && phaseSecondsLeft <= (effectiveLeadTime + 0.05) && phaseSecondsLeft >= 0.1 && !hasFiredRoundCall && !roundAuthoritativeLocked) {
         const dispatched = dispatchCwalletRoundCall(null, true);
         if (dispatched) {
             hasFiredRoundCall = true;
@@ -948,8 +950,9 @@ if (typeof socket !== 'undefined' && socket) {
             updateEarlyRadarVisual(sniperData);
             return;
         }
-        // IMMUTABLE ROUND LOCK: Once a call has been placed for this round, strictly lock and forbid any changes or flips
-        if (roundAuthoritativeLocked && currentRoundBet && currentRoundBet.round === roundNumber) {
+        // IMMUTABLE ROUND LOCK: Once an authoritative server call has locked, strictly forbid flips.
+        // If client triggered fallback at 5s, allow server call to enrich metadata without changing direction.
+        if (roundAuthoritativeLocked && currentRoundBet && currentRoundBet.round === roundNumber && !currentRoundBet.isFallback) {
             return;
         }
         hasFiredRoundCall = true;

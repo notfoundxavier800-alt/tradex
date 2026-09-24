@@ -859,9 +859,19 @@ def _signal_loop(interval: float = 1.0):
             print(f"[Signal Loop Error] {e}")
 
         now = time.time()
-        sleep_time = max(0.1, next_deadline - now)
+        # High-precision 50ms polling when approaching the T-5s sniper window to guarantee zero timing lag
+        cur_phase = r_state.get("phase", "BETTING") if 'r_state' in locals() and r_state else "BETTING"
+        cur_p_left = r_state.get("phase_seconds_left", 15.0) if 'r_state' in locals() and r_state else 15.0
+        cur_s_fired = (r_state.get("sniper_fired_for_round", -1) == r_state.get("round_id", -2)) if 'r_state' in locals() and r_state else False
+
+        if cur_phase == "BETTING" and cur_p_left <= 7.0 and not cur_s_fired:
+            dynamic_interval = 0.05  # 50ms ultra-precision sampling right around T-5s
+        else:
+            dynamic_interval = interval
+
+        sleep_time = max(0.01, min(dynamic_interval, next_deadline - now))
         time.sleep(sleep_time)
-        next_deadline = now + interval
+        next_deadline = now + dynamic_interval
 
 # ---------------------------------------------------------------------------
 # Public API
