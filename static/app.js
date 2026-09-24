@@ -257,19 +257,33 @@ function syncDurationToServer(dur) {
 }
 
 function setSyncTargetSecond(val, alertMsg = null) {
-    if (isNaN(val) || val < 1 || val > roundDuration) return;
+    if (isNaN(val)) return;
     const epochSec = Math.floor(Date.now() / 1000);
-    const targetPos = (roundDuration - val) % roundDuration;
+    let targetPos = 0;
+
+    // Proper mapping for dual-phase (15s betting + 5s battle):
+    // If val is round start (15s or 20s), targetPos = 0 (15s betting countdown)
+    if (val >= bettingDuration || val >= roundDuration) {
+        targetPos = 0;
+    } else if (val <= 0) {
+        // 0s remaining in betting = Battle Start boundary (pos = 15)
+        targetPos = bettingDuration;
+    } else {
+        // val is seconds remaining on the betting timer (e.g. 10s, 8s, 5s)
+        targetPos = (bettingDuration - val) % roundDuration;
+    }
+
     syncOffset = ((targetPos - (epochSec % roundDuration)) % roundDuration + roundDuration) % roundDuration;
     localStorage.setItem('cwallet_sync_offset', syncOffset);
     hasFiredRoundCall = false;
     roundAuthoritativeLocked = false;
     currentRoundBet = null;
-    roundSecondsLeft = val;
+    phaseSecondsLeft = (targetPos < bettingDuration) ? (bettingDuration - targetPos) : (roundDuration - targetPos);
+    roundSecondsLeft = roundDuration - targetPos;
     updateSyncOffsetDisplay();
 
-    // If syncing to round start (20s / 15s bet start), instantly lock current price as round strike!
-    if (val === roundDuration && lastPrice) {
+    // If syncing to round start (15s bet start), instantly lock current price as round strike!
+    if (targetPos === 0 && lastPrice) {
         cwalletRoundOpenPrice = lastPrice;
         if (cwalletOpenPriceDisplay) {
             cwalletOpenPriceDisplay.textContent = `$${lastPrice.toFixed(2)}`;
@@ -278,10 +292,10 @@ function setSyncTargetSecond(val, alertMsg = null) {
     }
 
     const payload = {
-        seconds_left: val,
+        seconds_left: roundSecondsLeft,
         sync_offset: syncOffset,
         round_duration: roundDuration,
-        open_price: (val === roundDuration && lastPrice) ? lastPrice : (cwalletRoundOpenPrice || undefined)
+        open_price: (targetPos === 0 && lastPrice) ? lastPrice : (cwalletRoundOpenPrice || undefined)
     };
 
     // Sync authoritative server-side RoundManager
@@ -444,7 +458,7 @@ if (btnSync5) {
 
 if (btnSyncBattle) {
     btnSyncBattle.addEventListener('click', () => {
-        setSyncTargetSecond(battleDuration, 'Synced to 5s Battle Start (Strike Snapped).');
+        setSyncTargetSecond(0, 'Synced to 5s Battle Start (Strike Snapped).');
     });
 }
 

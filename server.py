@@ -44,6 +44,17 @@ active_currency_symbol: str = "$"
 zero_defect_mode: bool = False
 
 # ---------------------------------------------------------------------------
+# CORS & Network Headers
+# ---------------------------------------------------------------------------
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 @app.route("/")
@@ -315,8 +326,10 @@ def download_apk():
             return send_file(p, as_attachment=True, download_name="tradex.apk", mimetype="application/vnd.android.package-archive")
     return "APK not found", 404
 
-@app.route("/api/sync_cwallet", methods=["POST"])
+@app.route("/api/sync_cwallet", methods=["POST", "OPTIONS"])
 def api_sync_cwallet():
+    if request.method == "OPTIONS":
+        return "", 204
     try:
         data = request.get_json(force=True, silent=True) or {}
         sec = data.get("seconds_left")
