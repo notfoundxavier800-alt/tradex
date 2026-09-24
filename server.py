@@ -42,6 +42,7 @@ active_symbol: str = "btcusdt"
 active_name: str = "Bitcoin (BTC)"
 active_currency_symbol: str = "$"
 zero_defect_mode: bool = False
+crypto_price_source: str = "auto"  # "auto", "futures", "spot"
 
 # ---------------------------------------------------------------------------
 # CORS & Network Headers
@@ -283,6 +284,19 @@ def api_live():
         order_flow = feed.get_order_flow() if feed else None
         history = signal_engine.get_signal_history() if signal_engine else []
 
+        spot_p = crypto_feed.get_latest_price() if crypto_feed else 0
+        fut_p = crypto_feed.get_futures_price() if crypto_feed else 0
+        k_ref = round_manager.battle_strike or round_manager.round_open_price if round_manager else None
+        if crypto_price_source == "futures":
+            cur_p = fut_p if fut_p > 0 else spot_p
+        elif crypto_price_source == "spot":
+            cur_p = spot_p
+        else:
+            if k_ref and k_ref > 0 and fut_p > 0 and spot_p > 0:
+                cur_p = fut_p if abs(k_ref - fut_p) < abs(k_ref - spot_p) else spot_p
+            else:
+                cur_p = spot_p if spot_p > 0 else fut_p
+
         return {
             "market_type": active_market_type,
             "symbol": active_symbol,
@@ -290,10 +304,13 @@ def api_live():
             "currency_symbol": active_currency_symbol,
             "connected": feed.is_connected() if feed else False,
             "candles": len(candles) if candles is not None else 0,
-            "price": feed.get_latest_price() if feed else 0,
+            "price": cur_p if active_market_type == "crypto" else (feed.get_latest_price() if feed else 0),
+            "spot_price": spot_p,
+            "futures_price": fut_p,
+            "price_source": crypto_price_source,
             "order_flow": order_flow,
             "market_info": market_info,
-            "cwallet_round": round_manager.get_state(feed.get_latest_price() if feed else 0) if round_manager else None,
+            "cwallet_round": round_manager.get_state(cur_p if active_market_type == "crypto" else (feed.get_latest_price() if feed else 0)) if round_manager else None,
             "last_signal": history[-1] if history else None,
             "stats": signal_engine.get_accuracy_stats() if signal_engine else {},
             "zero_defect_mode": zero_defect_mode
@@ -338,7 +355,20 @@ def api_sync_cwallet():
         dur = data.get("round_duration")
         lead = data.get("lead_time")
         offset = data.get("sync_offset")
-        curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+        phase = data.get("phase")
+
+        spot_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+        fut_p = crypto_feed.get_futures_price() if crypto_feed else 0.0
+        if crypto_price_source == "futures":
+            curr_p = fut_p if fut_p > 0 else spot_p
+        elif crypto_price_source == "spot":
+            curr_p = spot_p
+        else: # "auto"
+            if p and float(p) > 0 and fut_p > 0 and spot_p > 0:
+                curr_p = fut_p if abs(float(p) - fut_p) < abs(float(p) - spot_p) else spot_p
+            else:
+                curr_p = spot_p if spot_p > 0 else fut_p
+
         if dur:
             round_manager.set_duration(int(dur))
         if lead:
@@ -348,11 +378,27 @@ def api_sync_cwallet():
             open_price=float(p) if p is not None and float(p) > 0 else None,
             round_number=int(rnd) if rnd is not None else None,
             sync_offset=int(offset) if offset is not None else None,
-            current_price=curr_p
+            current_price=curr_p,
+            phase=phase
         )
         t_state = round_manager.tick(curr_p)
         socketio.emit("cwallet_round_update", t_state)
         return {"status": "ok", "state": t_state}
+    except Exception as e:
+        return {"error": str(e)}, 400
+
+@app.route("/api/set_crypto_price_source", methods=["POST", "OPTIONS"])
+def api_set_crypto_price_source():
+    global crypto_price_source
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        src = data.get("source", "auto")
+        if src in ("auto", "futures", "spot"):
+            crypto_price_source = src
+            socketio.emit("price_source_switched", {"price_source": crypto_price_source})
+        return {"status": "ok", "price_source": crypto_price_source}
     except Exception as e:
         return {"error": str(e)}, 400
 
@@ -459,7 +505,20 @@ def handle_sync_cwallet(data):
             dur = data.get("round_duration")
             lead = data.get("lead_time")
             offset = data.get("sync_offset")
-            curr_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+            phase = data.get("phase")
+
+            spot_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+            fut_p = crypto_feed.get_futures_price() if crypto_feed else 0.0
+            if crypto_price_source == "futures":
+                curr_p = fut_p if fut_p > 0 else spot_p
+            elif crypto_price_source == "spot":
+                curr_p = spot_p
+            else: # "auto"
+                if p and float(p) > 0 and fut_p > 0 and spot_p > 0:
+                    curr_p = fut_p if abs(float(p) - fut_p) < abs(float(p) - spot_p) else spot_p
+                else:
+                    curr_p = spot_p if spot_p > 0 else fut_p
+
             if dur:
                 round_manager.set_duration(int(dur))
             if lead:
@@ -469,11 +528,21 @@ def handle_sync_cwallet(data):
                 open_price=float(p) if p is not None and float(p) > 0 else None,
                 round_number=int(rnd) if rnd is not None else None,
                 sync_offset=int(offset) if offset is not None else None,
-                current_price=curr_p
+                current_price=curr_p,
+                phase=phase
             )
             socketio.emit("cwallet_round_update", round_manager.tick(curr_p))
         except Exception:
             pass
+
+@socketio.on("set_crypto_price_source")
+def handle_set_crypto_price_source(data):
+    global crypto_price_source
+    if isinstance(data, dict) and "source" in data:
+        src = data["source"]
+        if src in ("auto", "futures", "spot"):
+            crypto_price_source = src
+            socketio.emit("price_source_switched", {"price_source": crypto_price_source})
 
 @socketio.on("lock_strike")
 def handle_lock_strike(data):
@@ -631,8 +700,33 @@ def _signal_loop(interval: float = 1.0):
             else:
                 # --- CRYPTO (CWALLET) MODE ---
                 if crypto_feed and crypto_feed.is_connected():
-                    current_price = crypto_feed.get_latest_price() or 0.0
+                    spot_p = crypto_feed.get_latest_price() or 0.0
+                    fut_p = crypto_feed.get_futures_price() or 0.0
+
+                    k_ref = round_manager.battle_strike or round_manager.round_open_price
+                    if crypto_price_source == "futures":
+                        current_price = fut_p if fut_p > 0 else spot_p
+                        eff_source = "futures"
+                    elif crypto_price_source == "spot":
+                        current_price = spot_p
+                        eff_source = "spot"
+                    else:  # "auto"
+                        if k_ref and k_ref > 0 and fut_p > 0 and spot_p > 0:
+                            if abs(k_ref - fut_p) < abs(k_ref - spot_p):
+                                current_price = fut_p
+                                eff_source = "futures"
+                            else:
+                                current_price = spot_p
+                                eff_source = "spot"
+                        else:
+                            current_price = spot_p if spot_p > 0 else fut_p
+                            eff_source = "spot" if spot_p > 0 else "futures"
+
                     r_state = round_manager.tick(current_price)
+                    r_state["price_source"] = crypto_price_source
+                    r_state["effective_price_source"] = eff_source
+                    r_state["futures_price"] = fut_p
+                    r_state["spot_price"] = spot_p
                     socketio.emit("cwallet_round_update", r_state)
 
                     if r_state.get("just_settled"):

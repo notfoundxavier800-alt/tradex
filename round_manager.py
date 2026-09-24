@@ -166,23 +166,36 @@ class RoundManager:
         self.battle_strike = None
         self.is_battle_settled = False
 
-    def manual_sync(self, seconds_left: Optional[float] = None, open_price: Optional[float] = None, round_number: Optional[int] = None, sync_offset: Optional[int] = None, current_price: Optional[float] = None):
+    def manual_sync(self, seconds_left: Optional[float] = None, open_price: Optional[float] = None, round_number: Optional[int] = None, sync_offset: Optional[int] = None, current_price: Optional[float] = None, phase: Optional[str] = None):
         with self.lock:
             epoch_sec = time.time()
             if sync_offset is not None:
                 self.sync_offset = int(sync_offset) % self.round_duration
                 effective_time = epoch_sec + self.sync_offset
                 self.last_round_id = int(effective_time // self.round_duration)
-            elif seconds_left is not None and 1 <= seconds_left <= self.round_duration:
-                target_pos = (self.round_duration - float(seconds_left)) % self.round_duration
+            elif seconds_left is not None:
+                sec = float(seconds_left)
+                # Map seconds remaining to position within the continuous round epoch
+                if phase == "BATTLE":
+                    target_pos = self.betting_duration + max(0.0, min(float(self.battle_duration), float(self.battle_duration) - sec))
+                elif phase == "BETTING" or sec <= self.betting_duration:
+                    # User/Auto-sync is syncing to the betting window (e.g. 15s down to 0s)
+                    target_pos = (float(self.betting_duration) - sec) % self.round_duration
+                else:
+                    target_pos = (float(self.round_duration) - sec) % self.round_duration
+
                 self.sync_offset = ((target_pos - (epoch_sec % self.round_duration)) % self.round_duration + self.round_duration) % self.round_duration
                 effective_time = epoch_sec + self.sync_offset
                 self.last_round_id = int(effective_time // self.round_duration)
-                if seconds_left >= 5:
-                    self.sniper_fired_for_round = -1
-                    self.early_radar_fired_for_round = -1
-                    self.chambering_fired_for_round = -1
-                    self.upgrade_fired_for_round = -1
+
+                # Reset sniper fired flags if synced with >= 4.5s remaining in betting
+                if target_pos < self.betting_duration:
+                    betting_rem = self.betting_duration - target_pos
+                    if betting_rem >= 4.5:
+                        self.sniper_fired_for_round = -1
+                        self.early_radar_fired_for_round = -1
+                        self.chambering_fired_for_round = -1
+                        self.upgrade_fired_for_round = -1
 
             if open_price is not None and open_price > 0:
                 self.round_open_price = float(open_price)

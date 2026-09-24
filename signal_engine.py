@@ -200,8 +200,9 @@ class SignalEngine:
         with self.lock:
             self.evaluate_pending(price)
 
-        # Gate 1: Market Frozen
-        if chop_info.get("is_chop", False):
+        # Gate 1: Market Frozen (Only if both bars and live order flow are inactive)
+        is_order_flow_active = bool(order_flow and (order_flow.get("buy_vol_5s", 0) > 0.01 or order_flow.get("sell_vol_5s", 0) > 0.01 or order_flow.get("tick_intensity_5s", 0) > 0.2))
+        if chop_info.get("is_chop", False) and not is_order_flow_active:
             frozen_note = "Market is in an ultra-low volatility freeze. Waiting for order flow volume to resume."
             frozen_setup = {
                 'setup_title': 'Market Frozen / Inactive Range',
@@ -458,31 +459,31 @@ class SignalEngine:
         # True Volatility-Calibrated Strike Clearance (avoids coin-flip bets in 5s Brownian motion)
         if zd_active:
             if price_ref >= 10000:
-                clearance_thresh = max(16.0, price_ref * 0.00016)
+                clearance_thresh = max(1.20, price_ref * 0.000015)
             elif price_ref >= 1000:
-                clearance_thresh = max(0.40, price_ref * 0.00016)
+                clearance_thresh = max(0.12, price_ref * 0.000015)
             elif price_ref >= 100:
-                clearance_thresh = max(0.04, price_ref * 0.00018)
+                clearance_thresh = max(0.015, price_ref * 0.000018)
             elif price_ref >= 1:
-                clearance_thresh = max(0.004, price_ref * 0.00020)
+                clearance_thresh = max(0.0015, price_ref * 0.000020)
             else:
-                clearance_thresh = max(0.00004, price_ref * 0.00025)
+                clearance_thresh = max(0.00002, price_ref * 0.000025)
         else:
             if price_ref >= 10000:
-                clearance_thresh = max(7.0, price_ref * 0.00008)
+                clearance_thresh = max(0.65, price_ref * 0.000008)
             elif price_ref >= 1000:
-                clearance_thresh = max(0.20, price_ref * 0.00008)
+                clearance_thresh = max(0.065, price_ref * 0.000008)
             elif price_ref >= 100:
-                clearance_thresh = max(0.02, price_ref * 0.00010)
+                clearance_thresh = max(0.008, price_ref * 0.000010)
             elif price_ref >= 1:
-                clearance_thresh = max(0.002, price_ref * 0.00012)
+                clearance_thresh = max(0.0008, price_ref * 0.000012)
             else:
-                clearance_thresh = max(0.00002, price_ref * 0.00015)
+                clearance_thresh = max(0.00001, price_ref * 0.000015)
 
         # Dynamic micro-slippage & volatility buffer
         atr = float(chop_info.get("atr", 1.0))
-        vol_buffer = max(0.0, (atr - 2.0) * 0.30) if (price_ref >= 10000 and atr > 2.0) else 0.0
-        clearance_thresh = min(25.0, clearance_thresh + vol_buffer)
+        vol_buffer = max(0.0, (atr - 2.0) * 0.05) if (price_ref >= 10000 and atr > 2.0) else 0.0
+        clearance_thresh = min(3.50, clearance_thresh + vol_buffer)
 
         # Extract Whale Wall Shield & Pre-Sniper Chambering
         whale_shield = scan.get("whale_shield") or scan.get("book_wall_model") or {}
@@ -532,61 +533,64 @@ class SignalEngine:
         v10_bull = not (ou_z > 1.6 and recent_mom < 0.0) and (ou_z > -1.5)
         v10_bear = not (ou_z < -1.6 and recent_mom > 0.0) and (ou_z < 1.5)
 
-        # 11. Binance Futures Basis Lead-Lag Arbitrage
-        v11_bull = (fut_p > k_price and delta_strike > 0) if fut_p > 0 else (delta_strike > 0)
-        v11_bear = (fut_p < k_price and delta_strike < 0) if fut_p > 0 else (delta_strike < 0)
+        # 11. Binance Futures Basis Lead-Lag Arbitrage (direction aligned)
+        fut_chg = float((order_flow or {}).get("futures_change_5s", 0.0))
+        fut_d5 = float((order_flow or {}).get("futures_delta_5s", 0.0))
+        v11_bull = (fut_chg > 0.0 or fut_d5 > 0.0) if fut_p > 0 else (delta_strike > 0)
+        v11_bear = (fut_chg < 0.0 or fut_d5 < 0.0) if fut_p > 0 else (delta_strike < 0)
 
         # 12. Shannon Entropy & Whale Order Flow Delta
-        v12_bull = (r_range_pct >= 0.55 and of_whale_delta >= 0.0)
-        v12_bear = (r_range_pct <= 0.45 and of_whale_delta <= 0.0)
+        v12_bull = (r_range_pct >= 0.52 and of_whale_delta >= 0.0)
+        v12_bear = (r_range_pct <= 0.48 and of_whale_delta <= 0.0)
 
         # 13. Garman-Klass-Yang-Zhang Realized Volatility Diffusion
-        v13_bull = (sigma_gkyz > 0.0001 and recent_mom > 0.0)
-        v13_bear = (sigma_gkyz > 0.0001 and recent_mom < 0.0)
+        v13_bull = (sigma_gkyz > 0.00005 and recent_mom >= 0.0)
+        v13_bear = (sigma_gkyz > 0.00005 and recent_mom <= 0.0)
 
         # 14. 3-State Markov Transition Persistence
-        v14_bull = (markov_st in ("TREND_MOMENTUM", "TRENDING_UP", "TREND_UP", "VOLATILE_TREND") and recent_mom >= 0.0) or (markov_st not in ("CHOP", "GAUSSIAN_CHOP", "MEAN_REVERTING") and recent_mom > 0.20)
-        v14_bear = (markov_st in ("TREND_MOMENTUM", "TRENDING_DOWN", "TREND_DOWN", "VOLATILE_TREND") and recent_mom <= 0.0) or (markov_st not in ("CHOP", "GAUSSIAN_CHOP", "MEAN_REVERTING") and recent_mom < -0.20)
+        v14_bull = (markov_st in ("TREND_MOMENTUM", "TRENDING_UP", "TREND_UP", "VOLATILE_TREND") and recent_mom >= 0.0) or (recent_mom > 0.10)
+        v14_bear = (markov_st in ("TREND_MOMENTUM", "TRENDING_DOWN", "TREND_DOWN", "VOLATILE_TREND") and recent_mom <= 0.0) or (recent_mom < -0.10)
 
         # 15. Avellaneda-Stoikov Dealer Skew
-        v15_bull = (avell_skew > 0.02)
-        v15_bear = (avell_skew < -0.02)
+        v15_bull = (avell_skew > 0.01)
+        v15_bear = (avell_skew < -0.01)
 
         # 16. Bayesian MAP Posterior Multiplier
-        v16_bull = (post_bull >= 0.60)
-        v16_bear = (post_bear >= 0.60)
+        v16_bull = (post_bull >= 0.55)
+        v16_bear = (post_bear >= 0.55)
 
         # 17. L2 Cumulative Depth to Strike Absorption Wall Invariance
-        v17_bull = (burn_ratio_up >= 1.2 or not ask_iceberg_blocking) and (delta_strike > 0)
-        v17_bear = (burn_ratio_down >= 1.2 or not bid_iceberg_blocking) and (delta_strike < 0)
+        v17_bull = (burn_ratio_up >= 1.1 or not ask_iceberg_blocking) and (delta_strike > 0)
+        v17_bear = (burn_ratio_down >= 1.1 or not bid_iceberg_blocking) and (delta_strike < 0)
 
         # 18. Dual Cross-Exchange Triangulation (Coinbase Pro + Binance Futures)
-        v18_bull = (cb_price > k_price and cb_change > 0.0) if cb_price > 0 else (delta_strike > 0)
-        v18_bear = (cb_price < k_price and cb_change < 0.0) if cb_price > 0 else (delta_strike < 0)
+        cb_chg = float((order_flow or {}).get("coinbase_change_5s", 0.0))
+        v18_bull = (cb_chg > 0.0) if cb_price > 0 else (delta_strike > 0)
+        v18_bear = (cb_chg < 0.0) if cb_price > 0 else (delta_strike < 0)
 
         # 19. Fractal Hurst Exponent Long-Memory Persistence
-        v19_bull = (hurst_h >= 0.52 and recent_mom > 0.0)
-        v19_bear = (hurst_h >= 0.52 and recent_mom < 0.0)
+        v19_bull = (hurst_h >= 0.50 and recent_mom >= 0.0)
+        v19_bear = (hurst_h >= 0.50 and recent_mom <= 0.0)
 
         # 20. Bouchaud Propagator Model of Transient Impact Decay
-        v20_bull = (bouchaud_score >= 0.15 and delta_5s > 0)
-        v20_bear = (bouchaud_score <= -0.15 and delta_5s < 0)
+        v20_bull = (bouchaud_score >= 0.05 and delta_5s >= 0)
+        v20_bear = (bouchaud_score <= -0.05 and delta_5s <= 0)
 
         # 21. Almgren-Chriss Optimal Execution Liquidation Drift
-        v21_bull = (ac_drift > 0.02)
-        v21_bear = (ac_drift < -0.02)
+        v21_bull = (ac_drift > 0.01)
+        v21_bear = (ac_drift < -0.01)
 
         # 22. Feller / CIR Stochastic Volatility Stability Condition
-        v22_bull = feller_is_stable and (recent_mom > 0.0)
-        v22_bear = feller_is_stable and (recent_mom < 0.0)
+        v22_bull = feller_is_stable and (recent_mom >= 0.0)
+        v22_bear = feller_is_stable and (recent_mom <= 0.0)
 
         # 23. Cont-Stoikov Queue Depletion Gradient
-        v23_bull = (queue_grad > 0.02)
-        v23_bear = (queue_grad < -0.02)
+        v23_bull = (queue_grad > 0.01)
+        v23_bear = (queue_grad < -0.01)
 
         # 24. Cross-Venue Basis Expansion & Lead-Lag Corroboration
-        v24_bull = (basis_delta > 0.02)
-        v24_bear = (basis_delta < -0.02)
+        v24_bull = (basis_delta > 0.01)
+        v24_bear = (basis_delta < -0.01)
 
         bull_vectors = [
             v1_bull, v2_bull, v3_bull, v4_bull, v5_bull, v6_bull, v7_bull, v8_bull,
@@ -602,15 +606,13 @@ class SignalEngine:
         bull_confluence = sum(1 for v in bull_vectors if v)
         bear_confluence = sum(1 for v in bear_vectors if v)
 
-        min_confluence = 16 if zd_active else 14
-        conf_lead = 6 if zd_active else 4
+        min_confluence = 14 if zd_active else 12
+        conf_lead = 4 if zd_active else 2
 
         is_bull = (
             delta_strike >= clearance_thresh
             and bull_confluence >= min_confluence
             and (bull_confluence - bear_confluence) >= conf_lead
-            and v10_bull
-            and v6_bull
             and not ask_iceberg_blocking
         )
 
@@ -618,8 +620,6 @@ class SignalEngine:
             delta_strike <= -clearance_thresh
             and bear_confluence >= min_confluence
             and (bear_confluence - bull_confluence) >= conf_lead
-            and v10_bear
-            and v6_bear
             and not bid_iceberg_blocking
         )
 
@@ -630,45 +630,21 @@ class SignalEngine:
         else:
             direction = 'WAIT'
 
-        # Capital Shield Gating & Anti-Half-Prediction Gates:
-
-        # 1. Chop Regime Gate: instantly pass when chop state is detected
-        if chop_info.get("is_chop", False) or markov_st in ("CHOP", "GAUSSIAN_CHOP") or regime == "CHOP":
+        # Capital Shield Gating:
+        # 1. Absolute Direction Guard: reject UP if price is below strike; reject DOWN if price is above strike
+        if direction == 'UP' and delta_strike < -0.05:
+            direction = 'WAIT'
+        if direction == 'DOWN' and delta_strike > 0.05:
             direction = 'WAIT'
 
-        # 2. Absolute Direction Guard: reject UP if price is below strike; reject DOWN if price is above strike
-        if direction == 'UP' and delta_strike < 0:
-            direction = 'WAIT'
-        if direction == 'DOWN' and delta_strike > 0:
+        # 2. Strike Clearance Minimum: reject micro-fluctuations under clearance_thresh
+        if abs(delta_strike) < clearance_thresh:
             direction = 'WAIT'
 
-        # 3. Strike Clearance Separation: require >= $16.00 on BTC beyond Brownian motion noise
-        if price_ref >= 10000 and abs(delta_strike) < 16.00:
+        # 3. Obstacle Wall Gate: veto if massive wall >= 3.0 BTC right in path within $2
+        if direction == 'DOWN' and bid_wall_btc >= 3.0 and abs(delta_strike) < 2.0:
             direction = 'WAIT'
-
-        # 4. Anti-Whipsaw Order-Book Obstacle Wall Gate (>= 2.0 BTC in $2-$5 range)
-        if direction == 'DOWN' and bid_wall_btc >= WALL_THRESHOLD:
-            direction = 'WAIT'
-        if direction == 'UP' and ask_wall_btc >= WALL_THRESHOLD:
-            direction = 'WAIT'
-
-        # 5. Whale Wall Ratio Gate: require >= 2.5:1 in trade direction
-        if zd_active or (bid_wall_btc > 0 or ask_wall_btc > 0):
-            if direction == 'UP' and not (burn_ratio_up >= 2.5 or (bid_wall_btc >= 2.5 * max(0.05, ask_wall_btc))):
-                direction = 'WAIT'
-            elif direction == 'DOWN' and not (burn_ratio_down >= 2.5 or (ask_wall_btc >= 2.5 * max(0.05, bid_wall_btc))):
-                direction = 'WAIT'
-
-        # 6. CVD Deceleration Gate: sell deceleration (accel > 0) vetoes DOWN; buy deceleration (accel < 0) vetoes UP
-        if direction == 'DOWN' and cvd_accel > 0:
-            direction = 'WAIT'
-        if direction == 'UP' and cvd_accel < 0:
-            direction = 'WAIT'
-
-        # 7. OU Exhaustion Gate: oversold (ou_z < -OU_Z_THRESH) vetoes DOWN; overbought (ou_z > OU_Z_THRESH) vetoes UP
-        if direction == 'DOWN' and ou_z < -OU_Z_THRESH:
-            direction = 'WAIT'
-        if direction == 'UP' and ou_z > OU_Z_THRESH:
+        if direction == 'UP' and ask_wall_btc >= 3.0 and abs(delta_strike) < 2.0:
             direction = 'WAIT'
 
         self.prev_direction = direction
@@ -736,15 +712,13 @@ class SignalEngine:
                 is_zero_defect = False
         else:
             confidence = 50.0
-            if abs(delta_strike) < 0.50:
-                strength = f"🛡️ CAPITAL SHIELD: FLAT CHOP PASS (Δ {delta_strike:+.2f}$)"
-            elif not v22_bull:
+            if abs(delta_strike) < clearance_thresh:
+                strength = f"🛡️ CAPITAL SHIELD: FLAT CHOP PASS (Δ {delta_strike:+.2f}$ < ${clearance_thresh:.2f})"
+            elif feller_ratio < 0.50:
                 strength = f"🛡️ CAPITAL SHIELD: FELLER VOL EXPLOSION VETO (Ratio {feller_ratio:.2f})"
-            elif not v10_bull if delta_strike > 0 else not v10_bear:
+            elif abs(ou_z) > OU_Z_THRESH:
                 strength = f"🛡️ CAPITAL SHIELD: OVEREXTENDED MEAN-REVERSION VETO (Z={ou_z:+.1f}σ)"
-            elif not v6_bull if delta_strike > 0 else not v6_bear:
-                strength = f"🛡️ CAPITAL SHIELD: HAWKES CASCADE REVERSAL VETO (η={hawkes_eta:.2f})"
-            elif not v7_clean:
+            elif is_roll_noise_dom:
                 strength = f"🛡️ CAPITAL SHIELD: ROLL NOISE FILTER (Noise {roll_noise_ratio*100:.0f}%)"
             else:
                 strength = f"🛡️ CAPITAL SHIELD: CONFLUENCE PASS ({confluence_count}/24)"
