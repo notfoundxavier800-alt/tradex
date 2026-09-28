@@ -249,9 +249,14 @@ class BinanceDataFeed:
                 A = float(data["A"])
                 with self.lock:
                     mid = (b + a) / 2.0
-                    if self.futures_price <= 0:
-                        self.futures_price = mid
+                    self.futures_price = mid
                     self.futures_ticks.append((time.time(), mid))
+                    if self.latest_price > 0:
+                        basis = mid - self.latest_price
+                        self.basis_history.append((time.time(), basis))
+                    cutoff = time.time() - 60.0
+                    while self.basis_history and self.basis_history[0][0] < cutoff:
+                        self.basis_history.popleft()
                     self.futures_book_ticker = {
                         "best_bid": b, "bid_qty": B,
                         "best_ask": a, "ask_qty": A,
@@ -713,3 +718,11 @@ class BinanceDataFeed:
 
     def is_connected(self) -> bool:
         return self._is_spot_connected
+
+    def get_latest_price(self) -> float:
+        with self.lock:
+            return float(self.latest_price or 0.0)
+
+    def get_futures_price(self) -> float:
+        with self.lock:
+            return float(self.futures_price or 0.0)

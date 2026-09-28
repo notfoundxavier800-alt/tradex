@@ -38,6 +38,7 @@ class RoundManager:
         now_epoch = time.time()
         self.last_round_id = int(now_epoch // self.round_duration)
         self.round_open_price: Optional[float] = None
+        self.external_strike: Optional[float] = None
         self.round_high: Optional[float] = None
         self.round_low: Optional[float] = None
         self.round_ticks: List[tuple] = []  # (timestamp, price)
@@ -125,6 +126,7 @@ class RoundManager:
     def lock_strike(self, price: float):
         with self.lock:
             if price > 0:
+                self.external_strike = float(price)
                 self.round_open_price = float(price)
                 self.round_high = max(self.round_high or price, price)
                 self.round_low = min(self.round_low or price, price)
@@ -169,40 +171,54 @@ class RoundManager:
     def manual_sync(self, seconds_left: Optional[float] = None, open_price: Optional[float] = None, round_number: Optional[int] = None, sync_offset: Optional[int] = None, current_price: Optional[float] = None, phase: Optional[str] = None):
         with self.lock:
             epoch_sec = time.time()
-            if sync_offset is not None:
-                self.sync_offset = int(sync_offset) % self.round_duration
+            if sync_offset is not None and seconds_left is None:
+                self.sync_offset = (float(sync_offset) % self.round_duration) if isinstance(sync_offset, float) else (int(sync_offset) % self.round_duration)
                 effective_time = epoch_sec + self.sync_offset
-                self.last_round_id = int(effective_time // self.round_duration)
+                if self.last_round_id == -1:
+                    self.last_round_id = int(effective_time // self.round_duration)
             elif seconds_left is not None:
                 sec = float(seconds_left)
-                # Map seconds remaining to position within the continuous round epoch
-                if phase == "BATTLE":
+                # Disambiguate phase
+                cur_pos = (epoch_sec + self.sync_offset) % self.round_duration
+                in_battle_now = (cur_pos >= self.betting_duration)
+
+                if phase == "BATTLE" or (phase is None and sec <= self.battle_duration and in_battle_now):
                     target_pos = self.betting_duration + max(0.0, min(float(self.battle_duration), float(self.battle_duration) - sec))
-                elif phase == "BETTING" or sec <= self.betting_duration:
-                    # User/Auto-sync is syncing to the betting window (e.g. 15s down to 0s)
-                    target_pos = (float(self.betting_duration) - sec) % self.round_duration
+                elif phase == "BETTING" or (phase is None and sec <= self.betting_duration and (not in_battle_now or sec > self.battle_duration)):
+                    sec_clamped = max(0.0, min(float(self.betting_duration), sec))
+                    target_pos = float(self.betting_duration) - sec_clamped
                 else:
                     target_pos = (float(self.round_duration) - sec) % self.round_duration
 
-                self.sync_offset = ((target_pos - (epoch_sec % self.round_duration)) % self.round_duration + self.round_duration) % self.round_duration
-                effective_time = epoch_sec + self.sync_offset
-                self.last_round_id = int(effective_time // self.round_duration)
+                if in_battle_now and (phase == "BETTING" or target_pos < self.betting_duration) and self.last_round_id != -1:
+                    target_round_id = self.last_round_id + 1
+                    target_effective = float(target_round_id * self.round_duration) + target_pos
+                    self.sync_offset = target_effective - epoch_sec
+                else:
+                    self.sync_offset = ((target_pos - (epoch_sec % self.round_duration)) % self.round_duration + self.round_duration) % self.round_duration
+                    effective_time = epoch_sec + self.sync_offset
+                    if self.last_round_id == -1:
+                        self.last_round_id = int(effective_time // self.round_duration)
 
-                # Reset sniper fired flags if synced with >= 4.5s remaining in betting
-                if target_pos < self.betting_duration:
-                    betting_rem = self.betting_duration - target_pos
-                    if betting_rem >= 4.5:
-                        self.sniper_fired_for_round = -1
-                        self.early_radar_fired_for_round = -1
-                        self.chambering_fired_for_round = -1
-                        self.upgrade_fired_for_round = -1
+            # Universal sniper re-arm: re-arm if current position leaves >= 4.5s in betting
+            eff_pos = (epoch_sec + self.sync_offset) % self.round_duration
+            if eff_pos < self.betting_duration:
+                self.battle_strike = None
+                self.battle_start_time = None
+                betting_rem = self.betting_duration - eff_pos
+                if betting_rem >= 4.5:
+                    self.sniper_fired_for_round = -1
+                    self.early_radar_fired_for_round = -1
+                    self.chambering_fired_for_round = -1
+                    self.upgrade_fired_for_round = -1
 
             if open_price is not None and open_price > 0:
+                self.external_strike = float(open_price)
                 self.round_open_price = float(open_price)
                 self.round_high = float(open_price)
                 self.round_low = float(open_price)
                 self.round_ticks = [(epoch_sec, float(open_price))]
-            elif seconds_left is not None and seconds_left >= (self.round_duration - 3.0) and current_price and current_price > 0:
+            elif seconds_left is not None and seconds_left >= (self.betting_duration - 3.0) and current_price and current_price > 0:
                 self.round_open_price = float(current_price)
                 self.round_high = float(current_price)
                 self.round_low = float(current_price)
@@ -253,6 +269,7 @@ class RoundManager:
                 self.round_high = current_price if current_price > 0 else None
                 self.round_low = current_price if current_price > 0 else None
                 self.round_ticks = [(epoch_sec, current_price)] if current_price > 0 else []
+                self.external_strike = None
                 self.sniper_fired_for_round = -1
                 self.early_radar_fired_for_round = -1
                 self.chambering_fired_for_round = -1
@@ -280,6 +297,8 @@ class RoundManager:
             if pos < self.betting_duration:
                 phase = "BETTING"
                 phase_seconds_left = self.betting_duration - pos
+                self.battle_strike = None
+                self.battle_start_time = None
             else:
                 phase = "BATTLE"
                 phase_seconds_left = self.round_duration - pos
@@ -289,7 +308,7 @@ class RoundManager:
                 if self.battle_start_time is None:
                     self.battle_start_time = effective_time
 
-            strike = self.battle_strike or self.round_open_price or current_price
+            strike = (self.battle_strike if phase == "BATTLE" else self.round_open_price) or current_price
             delta = (current_price - strike) if (current_price and strike) else 0.0
 
             r_high = self.round_high or current_price

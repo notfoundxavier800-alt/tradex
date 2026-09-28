@@ -301,6 +301,77 @@ class TestConfluenceMatrixIntegration(unittest.TestCase):
         self.assertEqual(r1['regime'], r2['regime'])
         self.assertEqual(r1['rho_1'], r2['rho_1'])
 
+    def test_ai_hedge_fund_and_trading_agents_vector_integration(self):
+        """Verify that AI Hedge Fund & TradingAgents vectors are computed and included in indicators."""
+        df = pd.DataFrame({
+            "open": [64000.0 + i for i in range(30)],
+            "high": [64005.0 + i for i in range(30)],
+            "low": [63995.0 + i for i in range(30)],
+            "close": [64002.0 + i for i in range(30)]
+        })
+        scan = self.analyzer.analyze_all(df, round_open_price=64000.0, time_left=5.0)
+        self.assertEqual(scan.get("confluence_total"), 26)
+        self.assertIn("ai_engine", scan)
+        names = [ind.get("name") for ind in scan["indicators"]]
+        self.assertIn("AI Hedge Fund Investor Council", names)
+        self.assertIn("TradingAgents Debate & Risk Gate", names)
+
+    def test_signal_engine_ai_veto_and_quantum_apex(self):
+        """Verify SignalEngine veto and 26-vector quantum conviction."""
+        from signal_engine import SignalEngine
+        engine = SignalEngine(self.analyzer)
+        df = pd.DataFrame({"close": [64005.0 + (i * 0.5) for i in range(30)]})
+
+        # Test A: AI Veto (e.g. buying into massive ask wall)
+        of_blocked = {
+            "ask_wall_btc": 5.0,
+            "ask_iceberg_wall": True,
+            "taker_buy_pct_5s": 51.0
+        }
+        sig_veto = engine.generate_signal(df, order_flow=of_blocked, round_open_price=64000.0, time_left=5.0)
+        self.assertIn(sig_veto["direction"], ["WAIT"])
+        self.assertIn("AI COUNCIL RISK VETO", sig_veto["strength"])
+
+        # Test B: 26-Vector Quantum Apex
+        of_apex = {
+            "global_consensus": 0.85,
+            "futures_change_5s": 35.0,
+            "spot_change_5s": 30.0,
+            "coinbase_change_5s": 32.0,
+            "bull_ratio": 85.0,
+            "taker_buy_pct_5s": 75.0,
+            "delta_5s": 8.0,
+            "delta_acceleration": 2.5,
+            "price_velocity_3s": 1.5,
+            "futures_delta_5s": 6.0
+        }
+        sig_apex = engine.generate_signal(df, order_flow=of_apex, round_open_price=64000.0, time_left=5.0)
+        self.assertEqual(sig_apex["direction"], "UP")
+        self.assertEqual(sig_apex["confluence_total"], 26)
+        self.assertGreaterEqual(sig_apex["confidence"], 97.0)
+
+    def test_ai_council_first_priority_directional_gating(self):
+        """Verify AI Council First Priority: technical UP cannot fire if AI is Bearish or Neutral."""
+        from signal_engine import SignalEngine
+        engine = SignalEngine(self.analyzer)
+        df = pd.DataFrame({"close": [64005.0 + (i * 0.5) for i in range(30)]})
+
+        # Scenario: Bearish order flow where sellers dominate despite higher prices
+        of_bear_oppose = {
+            "global_consensus": -0.85,
+            "futures_change_5s": -15.0,
+            "taker_buy_pct_5s": 25.0,
+            "delta_5s": -8.0,
+            "delta_acceleration": -2.0,
+            "price_velocity_3s": -1.0,
+        }
+        sig_bear = engine.generate_signal(df, order_flow=of_bear_oppose, round_open_price=64000.0, time_left=5.0)
+        # Even though close > open (64019.5 > 64000), because AI council is bearish, UP MUST BE GATED!
+        self.assertNotEqual(sig_bear["direction"], "UP", "Bearish AI Council must prohibit UP call.")
+        self.assertEqual(sig_bear["direction"], "WAIT")
+        self.assertIn("CAPITAL SHIELD", sig_bear["strength"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

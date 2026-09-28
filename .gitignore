@@ -11,3 +11,4 @@ cloudflared.exe
 *.log
 scratch/
 .system_generated/
+.agents/

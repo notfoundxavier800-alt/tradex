@@ -276,6 +276,46 @@ class TestRoundManagerManualSyncAndConcurrency(unittest.TestCase):
         # Offset must be normalized modulo round_duration
         self.assertLess(self.rm.sync_offset, self.rm.round_duration)
 
+    def test_manual_sync_rearms_sniper(self):
+        """Universal sniper re-arm: re-arms sniper when >= 4.5s remaining in betting, even with sync_offset."""
+        # Mark sniper fired
+        cur_id = self.rm.last_round_id
+        self.rm.mark_sniper_fired(cur_id, direction='UP', strength='HIGH')
+        self.assertEqual(self.rm.sniper_fired_for_round, cur_id)
+
+        # Syncing with 15s left in betting must reset sniper_fired_for_round to -1
+        self.rm.manual_sync(seconds_left=15.0)
+        self.assertEqual(self.rm.sniper_fired_for_round, -1)
+
+        # Fire again
+        self.rm.mark_sniper_fired(cur_id, direction='DOWN', strength='GOD')
+        self.assertEqual(self.rm.sniper_fired_for_round, cur_id)
+
+        # Syncing with sync_offset directly must also re-arm if in betting window with >= 4.5s left
+        self.rm.manual_sync(sync_offset=0)
+        eff_pos = (time.time() + self.rm.sync_offset) % self.rm.round_duration
+        if eff_pos < self.rm.betting_duration and (self.rm.betting_duration - eff_pos) >= 4.5:
+            self.assertEqual(self.rm.sniper_fired_for_round, -1)
+
+        # Syncing with < 4.5s left in betting (e.g. 3.0s) should NOT re-arm sniper
+        self.rm.mark_sniper_fired(cur_id, direction='UP', strength='HIGH')
+        self.rm.manual_sync(seconds_left=3.0, phase='BETTING')
+        self.assertEqual(self.rm.sniper_fired_for_round, cur_id)
+
+    def test_manual_sync_snaps_open_price_at_15s(self):
+        """Syncing at 15s betting start locks current_price as round_open_price (>= betting_duration - 3.0)."""
+        self.rm.round_open_price = None
+        self.rm.manual_sync(seconds_left=15.0, current_price=64200.0)
+        self.assertEqual(self.rm.round_open_price, 64200.0)
+        self.assertEqual(self.rm.round_high, 64200.0)
+        self.assertEqual(self.rm.round_low, 64200.0)
+        self.assertEqual(len(self.rm.round_ticks), 1)
+
+    def test_manual_sync_open_price_priority(self):
+        """Explicit open_price takes precedence over current_price."""
+        self.rm.manual_sync(seconds_left=15.0, open_price=64500.0, current_price=64200.0)
+        self.assertEqual(self.rm.round_open_price, 64500.0)
+
     def test_concurrent_ticks_and_state_queries(self):
         """Multi-threaded stress test: ensures no race conditions or deadlocks."""
         errors = []

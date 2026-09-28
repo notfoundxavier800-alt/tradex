@@ -18,6 +18,7 @@ from analysis import TechnicalAnalyzer
 from signal_engine import SignalEngine
 from round_manager import RoundManager
 import notifier
+from ai_agents_hub import ai_hub
 
 # ---------------------------------------------------------------------------
 # Flask / Socket.IO setup (threading mode)
@@ -286,11 +287,11 @@ def api_live():
 
         spot_p = crypto_feed.get_latest_price() if crypto_feed else 0
         fut_p = crypto_feed.get_futures_price() if crypto_feed else 0
-        k_ref = round_manager.battle_strike or round_manager.round_open_price if round_manager else None
+        k_ref = round_manager.external_strike if (round_manager and round_manager.external_strike) else None
         if crypto_price_source == "futures":
             cur_p = fut_p if fut_p > 0 else spot_p
         elif crypto_price_source == "spot":
-            cur_p = spot_p
+            cur_p = spot_p if spot_p > 0 else fut_p
         else:
             if k_ref and k_ref > 0 and fut_p > 0 and spot_p > 0:
                 cur_p = fut_p if abs(k_ref - fut_p) < abs(k_ref - spot_p) else spot_p
@@ -359,13 +360,15 @@ def api_sync_cwallet():
 
         spot_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
         fut_p = crypto_feed.get_futures_price() if crypto_feed else 0.0
+        k_ref = round_manager.external_strike if (round_manager and round_manager.external_strike) else None
+        target_k = float(p) if (p and float(p) > 0) else k_ref
         if crypto_price_source == "futures":
             curr_p = fut_p if fut_p > 0 else spot_p
         elif crypto_price_source == "spot":
-            curr_p = spot_p
+            curr_p = spot_p if spot_p > 0 else fut_p
         else: # "auto"
-            if p and float(p) > 0 and fut_p > 0 and spot_p > 0:
-                curr_p = fut_p if abs(float(p) - fut_p) < abs(float(p) - spot_p) else spot_p
+            if target_k and target_k > 0 and fut_p > 0 and spot_p > 0:
+                curr_p = fut_p if abs(target_k - fut_p) < abs(target_k - spot_p) else spot_p
             else:
                 curr_p = spot_p if spot_p > 0 else fut_p
 
@@ -450,9 +453,123 @@ def api_toggle_zero_defect():
     return {"status": "ok", "zero_defect_mode": zero_defect_mode}
 
 # ---------------------------------------------------------------------------
+# AI Multi-Agent & Investor Council Endpoints (TradingAgents + AI Hedge Fund)
+# ---------------------------------------------------------------------------
+@app.route("/api/ai/status")
+def api_ai_status():
+    return ai_hub.get_status()
+
+def _extract_tech_summary(last_sig):
+    if not isinstance(last_sig, dict):
+        return {"overall_bias": "UP", "score": 0.0, "rsi": 50.0, "adx": 25.0}
+    direction = last_sig.get("direction", "UP")
+    score = last_sig.get("composite_score", last_sig.get("score", 0.0))
+    inds = last_sig.get("indicators", {})
+    rsi = 50.0
+    adx = 25.0
+    if isinstance(inds, dict):
+        rsi = inds.get("rsi", 50.0)
+        adx = inds.get("adx", 25.0)
+    elif isinstance(inds, list):
+        for item in inds:
+            if isinstance(item, dict):
+                if item.get("name") == "rsi" or "rsi" in item:
+                    rsi = item.get("value", item.get("rsi", 50.0))
+                if item.get("name") == "adx" or "adx" in item:
+                    adx = item.get("value", item.get("adx", 25.0))
+    return {
+        "overall_bias": direction,
+        "score": float(score) if isinstance(score, (int, float)) else 0.0,
+        "rsi": float(rsi) if isinstance(rsi, (int, float)) else 50.0,
+        "adx": float(adx) if isinstance(adx, (int, float)) else 25.0,
+    }
+
+@app.route("/api/ai/consensus")
+def api_ai_consensus():
+    try:
+        sym = request.args.get("symbol", active_symbol).strip().upper()
+        force = request.args.get("force", "0") in ("1", "true", "True") or request.args.get("refresh", "0") in ("1", "true", "True")
+        if not force:
+            cached = ai_hub.get_cached_analysis(sym)
+            if cached:
+                return {"status": "ok", "cached": True, **cached}
+        
+        feed = indian_feed if active_market_type == "indian" else (international_feed if active_market_type == "international" else crypto_feed)
+        curr_p = feed.get_latest_price() if (feed and hasattr(feed, "get_latest_price")) else 0.0
+        history = signal_engine.get_signal_history() if signal_engine else []
+        last_sig = history[-1] if history else {}
+        tech = _extract_tech_summary(last_sig)
+        result = ai_hub.evaluate_symbol_sync(
+            symbol=sym,
+            market_type=active_market_type,
+            current_price=curr_p,
+            technical_summary=tech
+        )
+        return {"status": "ok", "cached": False, **result}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "error": str(e)}, 500
+
+
+@app.route("/api/ai/analyze", methods=["POST"])
+def api_ai_analyze():
+    data = request.get_json(force=True, silent=True) or {}
+    sym = data.get("symbol", active_symbol).strip().upper()
+    feed = indian_feed if active_market_type == "indian" else (international_feed if active_market_type == "international" else crypto_feed)
+    curr_p = feed.get_latest_price() if feed else 0.0
+    history = signal_engine.get_signal_history() if signal_engine else []
+    last_sig = history[-1] if history else {}
+    tech = _extract_tech_summary(last_sig)
+
+    def _on_done(res):
+        socketio.emit("ai_analysis_complete", res)
+
+    ai_hub.evaluate_symbol_async(
+        symbol=sym,
+        market_type=active_market_type,
+        current_price=curr_p,
+        technical_summary=tech,
+        callback=_on_done
+    )
+    return {"status": "started", "symbol": sym, "market_type": active_market_type}
+
+
+@app.route("/api/ai/investors")
+def api_ai_investors():
+    sym = request.args.get("symbol", active_symbol).strip().upper()
+    cached = ai_hub.get_cached_analysis(sym)
+    if cached and "investor_council" in cached:
+        return {"status": "ok", "symbol": sym, "investors": cached["investor_council"]}
+    
+    feed = indian_feed if active_market_type == "indian" else (international_feed if active_market_type == "international" else crypto_feed)
+    curr_p = feed.get_latest_price() if feed else 0.0
+    res = ai_hub.evaluate_symbol_sync(sym, active_market_type, curr_p)
+    return {"status": "ok", "symbol": sym, "investors": res.get("investor_council", {})}
+
+@app.route("/api/ai/config", methods=["GET", "POST"])
+def api_ai_config():
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        if "gemini_key" in data and data["gemini_key"]:
+            os.environ["GOOGLE_API_KEY"] = data["gemini_key"]
+            os.environ["GEMINI_API_KEY"] = data["gemini_key"]
+        if "openai_key" in data and data["openai_key"]:
+            os.environ["OPENAI_API_KEY"] = data["openai_key"]
+        if "anthropic_key" in data and data["anthropic_key"]:
+            os.environ["ANTHROPIC_API_KEY"] = data["anthropic_key"]
+        if "deepseek_key" in data and data["deepseek_key"]:
+            os.environ["DEEPSEEK_API_KEY"] = data["deepseek_key"]
+        ai_hub._detect_environment()
+        socketio.emit("ai_config_updated", ai_hub.get_status())
+        return {"status": "ok", "config": ai_hub.get_status()}
+    return {"status": "ok", "config": ai_hub.get_status()}
+
+# ---------------------------------------------------------------------------
 # Socket.IO events
 # ---------------------------------------------------------------------------
 @socketio.on("connect")
+
 def handle_connect():
     socketio.emit("zero_defect_mode_switched", {"zero_defect_mode": zero_defect_mode})
     feed = indian_feed if active_market_type == "indian" else crypto_feed
@@ -509,13 +626,15 @@ def handle_sync_cwallet(data):
 
             spot_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
             fut_p = crypto_feed.get_futures_price() if crypto_feed else 0.0
+            k_ref = round_manager.external_strike if (round_manager and round_manager.external_strike) else None
+            target_k = float(p) if (p and float(p) > 0) else k_ref
             if crypto_price_source == "futures":
                 curr_p = fut_p if fut_p > 0 else spot_p
             elif crypto_price_source == "spot":
-                curr_p = spot_p
+                curr_p = spot_p if spot_p > 0 else fut_p
             else: # "auto"
-                if p and float(p) > 0 and fut_p > 0 and spot_p > 0:
-                    curr_p = fut_p if abs(float(p) - fut_p) < abs(float(p) - spot_p) else spot_p
+                if target_k and target_k > 0 and fut_p > 0 and spot_p > 0:
+                    curr_p = fut_p if abs(target_k - fut_p) < abs(target_k - spot_p) else spot_p
                 else:
                     curr_p = spot_p if spot_p > 0 else fut_p
 
@@ -589,6 +708,33 @@ def handle_toggle_zero_defect(data=None):
     if signal_engine:
         signal_engine.set_zero_defect_mode(zero_defect_mode)
     socketio.emit("zero_defect_mode_switched", {"zero_defect_mode": zero_defect_mode})
+
+@socketio.on("request_ai_analysis")
+def handle_request_ai_analysis(data=None):
+    try:
+        sym = (data.get("symbol") if isinstance(data, dict) else None) or active_symbol
+        feed = indian_feed if active_market_type == "indian" else (international_feed if active_market_type == "international" else crypto_feed)
+        curr_p = feed.get_latest_price() if (feed and hasattr(feed, "get_latest_price")) else 0.0
+        history = signal_engine.get_signal_history() if signal_engine else []
+        last_sig = history[-1] if history else {}
+        tech = _extract_tech_summary(last_sig)
+
+        def _emit_result(res):
+            try:
+                socketio.emit("ai_analysis_complete", res)
+            except Exception as emit_err:
+                print(f"[Socket.IO AI emit error]: {emit_err}")
+
+        ai_hub.evaluate_symbol_async(
+            symbol=sym,
+            market_type=active_market_type,
+            current_price=curr_p,
+            technical_summary=tech,
+            callback=_emit_result
+        )
+    except Exception as e:
+        print(f"[handle_request_ai_analysis error]: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Background signal loop
@@ -703,12 +849,12 @@ def _signal_loop(interval: float = 1.0):
                     spot_p = crypto_feed.get_latest_price() or 0.0
                     fut_p = crypto_feed.get_futures_price() or 0.0
 
-                    k_ref = round_manager.battle_strike or round_manager.round_open_price
+                    k_ref = round_manager.external_strike if (round_manager and round_manager.external_strike) else None
                     if crypto_price_source == "futures":
                         current_price = fut_p if fut_p > 0 else spot_p
                         eff_source = "futures"
                     elif crypto_price_source == "spot":
-                        current_price = spot_p
+                        current_price = spot_p if spot_p > 0 else fut_p
                         eff_source = "spot"
                     else:  # "auto"
                         if k_ref and k_ref > 0 and fut_p > 0 and spot_p > 0:
@@ -751,6 +897,9 @@ def _signal_loop(interval: float = 1.0):
 
                     candles = crypto_feed.get_candles()
                     if candles is not None and len(candles) >= 8:
+                        if current_price > 0 and not candles.empty:
+                            candles = candles.copy()
+                            candles.loc[candles.index[-1], 'close'] = current_price
                         order_flow = crypto_feed.get_order_flow()
                         result = signal_engine.generate_signal(
                             candles,
@@ -869,6 +1018,26 @@ def _signal_loop(interval: float = 1.0):
                                 call_direction = "PASS"
                                 is_conviction_call = False
 
+                            # AI COUNCIL FIRST PRIORITY SUPREME INTEGRITY CHECK
+                            ai_eng_payload = result.get("ai_engine", {})
+                            if call_direction in ("UP", "DOWN") and ai_eng_payload:
+                                ai_v = bool(ai_eng_payload.get("veto", False))
+                                ai_r_status = str(ai_eng_payload.get("risk_status", "APPROVED"))
+                                ai_s = float(ai_eng_payload.get("score", 0.0))
+                                ai_d = int(ai_eng_payload.get("signal", 0))
+                                if ai_v or ai_r_status == "REJECTED":
+                                    call_direction = "PASS"
+                                    is_conviction_call = False
+                                    call_strength = "🛡️ CAPITAL SHIELD: AI COUNCIL RISK VETO (Munger / Risk Gate)"
+                                elif call_direction == "UP" and (ai_s <= -0.15 or ai_d < 0):
+                                    call_direction = "PASS"
+                                    is_conviction_call = False
+                                    call_strength = "🛡️ CAPITAL SHIELD: AI COUNCIL DIRECTIONAL VETO (BEARISH MANDATE)"
+                                elif call_direction == "DOWN" and (ai_s >= 0.15 or ai_d > 0):
+                                    call_direction = "PASS"
+                                    is_conviction_call = False
+                                    call_strength = "🛡️ CAPITAL SHIELD: AI COUNCIL DIRECTIONAL VETO (BULLISH MANDATE)"
+
                             # Record sniper state in round manager (fires strictly once at T-5s)
                             round_manager.mark_sniper_fired(round_id, direction=call_direction, strength=call_strength)
 
@@ -887,8 +1056,9 @@ def _signal_loop(interval: float = 1.0):
                                     "kelly_unit": call_kelly,
                                     "win_prob": call_confidence if is_conviction_call else 50.0,
                                     "confluence_count": confluence_count,
-                                    "confluence_total": 24,
-                                    "confluence_score": f"{confluence_count}/24 CONFLUENCE",
+                                    "confluence_total": result.get("confluence_total", 26),
+                                    "confluence_score": result.get("confluence_score", f"{confluence_count}/26 CONFLUENCE"),
+                                    "ai_engine": result.get("ai_engine", {}),
                                     "hawkes_is_cascade": bool(hawkes_m.get("is_cascade", False)),
                                     "hawkes_branching": hawkes_m.get("branching_ratio", 0.5),
                                     "gkyz_volatility": (result.get("gkyz_model") or {}).get("sigma_gkyz", 0.0),
@@ -973,12 +1143,14 @@ def _signal_loop(interval: float = 1.0):
 
         if cur_phase == "BETTING" and cur_p_left <= 7.0 and not cur_s_fired:
             dynamic_interval = 0.05  # 50ms ultra-precision sampling right around T-5s
+            next_deadline = min(next_deadline, now + dynamic_interval)
         else:
             dynamic_interval = interval
 
-        sleep_time = max(0.01, min(dynamic_interval, next_deadline - now))
-        time.sleep(sleep_time)
-        next_deadline = now + dynamic_interval
+        sleep_time = max(0.005, next_deadline - now)
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        next_deadline = time.time() + dynamic_interval
 
 # ---------------------------------------------------------------------------
 # Public API

@@ -83,5 +83,52 @@ class TestRoundManagerPhase(unittest.TestCase):
         self.assertEqual(state['phase'], 'BETTING')
         self.assertIsNone(self.rm.battle_strike)
 
+    def test_manual_sync_battle_phase_mapping(self):
+        """manual_sync with phase='BATTLE' maps seconds_left (e.g. 4s) into battle window (16s in epoch)."""
+        with patch('time.time', return_value=self.start_epoch):
+            self.rm.manual_sync(seconds_left=4.0, phase='BATTLE')
+            state = self.rm.tick(100.0)
+            self.assertEqual(state['phase'], 'BATTLE')
+            self.assertAlmostEqual(state['phase_seconds_left'], 4.0, places=2)
+            self.assertFalse(state['is_sniper_window'])
+            self.assertFalse(state['should_fire_sniper'])
+
+    def test_manual_sync_betting_5s_sniper_mark(self):
+        """manual_sync with seconds_left=5.0, phase='BETTING' maps exactly to T-5s mark and opens sniper window."""
+        with patch('time.time', return_value=self.start_epoch):
+            self.rm.manual_sync(seconds_left=5.0, phase='BETTING')
+            state = self.rm.tick(100.0)
+            self.assertEqual(state['phase'], 'BETTING')
+            self.assertAlmostEqual(state['phase_seconds_left'], 5.0, places=2)
+            self.assertTrue(state['is_sniper_window'])
+            self.assertTrue(state['should_fire_sniper'])
+
+    def test_no_phase_inversion_when_phase_none_during_battle(self):
+        """When currently in BATTLE phase, manual_sync with phase=None and sec <= 5s preserves BATTLE."""
+        # Advance into battle window (e.g. at t=16s)
+        with patch('time.time', return_value=self.start_epoch + 16.0):
+            state = self.rm.tick(100.0)
+            self.assertEqual(state['phase'], 'BATTLE')
+
+            # Cwallet sends 3s remaining without phase
+            self.rm.manual_sync(seconds_left=3.0, phase=None)
+            state_after = self.rm.tick(100.0)
+            self.assertEqual(state_after['phase'], 'BATTLE')
+            self.assertAlmostEqual(state_after['phase_seconds_left'], 3.0, places=2)
+            self.assertFalse(state_after['is_sniper_window'])
+
+    def test_manual_sync_phase_none_during_betting(self):
+        """When currently in BETTING phase, manual_sync with phase=None maps to BETTING window."""
+        with patch('time.time', return_value=self.start_epoch + 5.0):
+            state = self.rm.tick(100.0)
+            self.assertEqual(state['phase'], 'BETTING')
+
+            # Cwallet sends 4s remaining without phase -> stays in betting
+            self.rm.manual_sync(seconds_left=4.0, phase=None)
+            state_after = self.rm.tick(100.0)
+            self.assertEqual(state_after['phase'], 'BETTING')
+            self.assertAlmostEqual(state_after['phase_seconds_left'], 4.0, places=2)
+            self.assertTrue(state_after['is_sniper_window'])
+
 if __name__ == '__main__':
     unittest.main()

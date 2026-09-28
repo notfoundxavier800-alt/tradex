@@ -1,6 +1,12 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+
+try:
+    from ai_agents_hub import ai_hub
+except Exception:
+    ai_hub = None
+
 
 class TechnicalAnalyzer:
     """
@@ -1911,7 +1917,59 @@ class TechnicalAnalyzer:
             {**vpin_info, 'name': 'VPIN Flow Toxicity', 'weight': 0.04},
         ]
 
-        bayesian_info = self.calc_bayesian_probability(prior_bull=0.50, indicators=indicators)
+        # 🌌 Dynamic Microstructure RSI & Momentum for AI Council
+        calc_rsi = 50.0
+        if not df.empty and len(df) >= 6 and 'close' in df:
+            try:
+                diffs = df['close'].diff().dropna()
+                gains = diffs.clip(lower=0.0)
+                losses = -diffs.clip(upper=0.0)
+                avg_gain = float(gains.tail(14).mean())
+                avg_loss = float(losses.tail(14).mean())
+                if avg_loss > 1e-9:
+                    rs = avg_gain / avg_loss
+                    calc_rsi = float(100.0 - (100.0 / (1.0 + rs)))
+                elif avg_gain > 1e-9:
+                    calc_rsi = 100.0
+            except Exception:
+                calc_rsi = 50.0
+
+        # 🌌 AI Hedge Fund (5 Personas) & TradingAgents Multi-Agent Engine (< 0.1ms)
+        ai_engine_data = {}
+        ai_score = 0.0
+        ai_signal = 0
+        ai_detail = "AI Engine Initializing..."
+        ai_debate_score = 0.0
+        ai_debate_sig = 0
+        ai_debate_detail = "Debate Inactive"
+        if ai_hub is not None:
+            try:
+                ai_engine_data = ai_hub.evaluate_engine_tick(
+                    symbol=(round_info or {}).get("symbol", "BTCUSDT"),
+                    current_price=curr_p,
+                    strike=round_open_price,
+                    time_left=time_left,
+                    technical_summary={
+                        "overall_bias": "UP" if smc_sig > 0 or barrier_indicator["signal"] > 0 else ("DOWN" if smc_sig < 0 or barrier_indicator["signal"] < 0 else "NEUTRAL"),
+                        "score": barrier_indicator.get("score", 0.0),
+                        "rsi": calc_rsi,
+                        "adx": 24.0
+                    },
+                    order_flow=order_flow,
+                    regime_info=regime_info
+                )
+                ai_score = float(ai_engine_data.get("score", 0.0))
+                ai_signal = int(ai_engine_data.get("signal", 0))
+                ai_detail = ai_engine_data.get("summary", "")
+                ai_debate_score = float(ai_engine_data.get("debate_score", 0.0))
+                ai_debate_sig = 1 if ai_debate_score > 0.15 else (-1 if ai_debate_score < -0.15 else 0)
+                deb_w = ai_engine_data.get("trading_agents", {}).get("debate", {}).get("winner", "DEADLOCK")
+                ai_debate_detail = f"Debate: {deb_w} | Risk: {ai_engine_data.get('risk_status', 'APPROVED')}"
+            except Exception as e:
+                ai_engine_data = {"score": 0.0, "signal": 0, "summary": f"AI Engine standby: {e}"}
+
+        bayesian_prior = float(np.clip(0.50 + 0.30 * ai_score, 0.15, 0.85))
+        bayesian_info = self.calc_bayesian_probability(prior_bull=bayesian_prior, indicators=indicators)
         book_wall_info = self.calc_book_wall_absorption(order_flow=order_flow, current_price=curr_p, round_open_price=round_open_price)
         tri_venue_info = self.calc_tri_venue_triangulation(order_flow=order_flow, round_open_price=round_open_price, current_price=curr_p)
         almgren_info = self.calc_almgren_chriss_drift(df, order_flow=order_flow, current_price=curr_p)
@@ -1919,7 +1977,7 @@ class TechnicalAnalyzer:
         queue_grad_info = self.calc_queue_depletion_gradient(order_flow=order_flow)
         basis_info = self.calc_cross_venue_basis_expansion(order_flow=order_flow, current_price=curr_p)
 
-        # Extended Quantitative Indicators to populate full 24-vector confluence matrix
+        # Extended Quantitative Indicators to populate full 26-vector confluence matrix
         extended_indicators = [
             {'name': 'Avellaneda-Stoikov Skew', 'value': round(avellaneda_info.get('skew_bps', 0.0), 2), 'score': avellaneda_info.get('score', 0.0), 'signal': avellaneda_info.get('signal', 0), 'weight': 0.05, 'detail': avellaneda_info.get('detail', '')},
             {'name': 'Kalman Velocity Denoising', 'value': round(kalman_info.get('velocity_bps', 0.0), 2), 'score': kalman_info.get('score', 0.0), 'signal': kalman_info.get('signal', 0), 'weight': 0.05, 'detail': kalman_info.get('detail', '')},
@@ -1934,7 +1992,9 @@ class TechnicalAnalyzer:
             {'name': 'GKYZ Realized Volatility', 'value': round(gkyz_info.get('sigma_gkyz', 0.0), 3), 'score': gkyz_info.get('score', 0.0), 'signal': gkyz_info.get('signal', 0), 'weight': 0.03, 'detail': gkyz_info.get('detail', '')},
             {'name': 'Cross-Venue Basis Expansion', 'value': round(basis_info.get('basis_delta', 0.0), 2), 'score': basis_info.get('score', 0.0), 'signal': basis_info.get('signal', 0), 'weight': 0.03, 'detail': basis_info.get('detail', '')},
             {'name': 'Bayesian MAP Posterior', 'value': round(bayesian_info.get('p_bull', 0.5), 2), 'score': round(float(np.clip((bayesian_info.get('p_bull', 0.5) - 0.5) * 2.0, -1.0, 1.0)), 3), 'signal': 1 if bayesian_info.get('p_bull', 0.5) > 0.55 else (-1 if bayesian_info.get('p_bull', 0.5) < 0.45 else 0), 'weight': 0.04, 'detail': bayesian_info.get('detail', '')},
-            {'name': 'Shannon Microstructure Entropy', 'value': round(entropy_info.get('norm_entropy', 1.0), 2), 'score': entropy_info.get('score', 0.0), 'signal': entropy_info.get('signal', 0), 'weight': 0.03, 'detail': entropy_info.get('detail', '')}
+            {'name': 'Shannon Microstructure Entropy', 'value': round(entropy_info.get('norm_entropy', 1.0), 2), 'score': entropy_info.get('score', 0.0), 'signal': entropy_info.get('signal', 0), 'weight': 0.03, 'detail': entropy_info.get('detail', '')},
+            {'name': 'AI Hedge Fund Investor Council', 'value': round(float(ai_engine_data.get("investor_score", ai_score)), 2), 'score': round(float(ai_engine_data.get("investor_score", ai_score)), 3), 'signal': ai_signal, 'weight': 0.15, 'detail': ai_detail},
+            {'name': 'TradingAgents Debate & Risk Gate', 'value': round(ai_debate_score, 2), 'score': round(ai_debate_score, 3), 'signal': ai_debate_sig, 'weight': 0.15, 'detail': ai_debate_detail}
         ]
         indicators.extend(extended_indicators)
 
@@ -1966,7 +2026,8 @@ class TechnicalAnalyzer:
             "feller_stability": feller_info,
             "queue_gradient": queue_grad_info,
             "basis_expansion": basis_info,
-            "bouchaud_propagator": bouchaud_info
+            "bouchaud_propagator": bouchaud_info,
+            "ai_engine": ai_engine_data
         }
 
         mtf_data = self.calc_mtf_alignment(df)
@@ -2003,10 +2064,11 @@ class TechnicalAnalyzer:
             "basis_expansion_model": basis_info,
             "bouchaud_model": bouchaud_info,
             "chambering_model": chambering_info,
+            "ai_engine": ai_engine_data,
             "smc_sweep": smc_sweep,
             "fvg_data": fvg_data,
             "predatory_data": predatory_data,
-            "confluence_total": 24,
+            "confluence_total": 26,
             "math_models": math_models
         }
 
@@ -2697,7 +2759,22 @@ class TechnicalAnalyzer:
             iceberg_info = self.detect_hidden_iceberg_absorption(df, order_flow=order_flow)
             squeeze_info = self.calc_bollinger_keltner_squeeze(df)
             tensor_info = self.calc_multi_horizon_tensor(df)
-            bayesian_info = self.calc_bayesian_probability(prior_bull=0.50, indicators=indicators)
+            ai_engine_data = {}
+            if ai_hub is not None:
+                try:
+                    ai_engine_data = ai_hub.evaluate_engine_tick(
+                        symbol=m_info.get("symbol", "EQUITY"),
+                        current_price=price,
+                        strike=vwap,
+                        technical_summary={"overall_bias": "UP" if vwap_sig > 0 else "DOWN", "score": vwap_score, "rsi": rsi},
+                        order_flow=order_flow,
+                        market_type="equity"
+                    )
+                except Exception:
+                    ai_engine_data = {}
+
+            bayesian_prior = float(np.clip(0.50 + 0.15 * float(ai_engine_data.get("score", 0.0)), 0.25, 0.75))
+            bayesian_info = self.calc_bayesian_probability(prior_bull=bayesian_prior, indicators=indicators)
 
             math_models = {
                 "shannon_entropy": entropy_info,
@@ -2708,7 +2785,8 @@ class TechnicalAnalyzer:
                 "kalman_velocity": kalman_info,
                 "iceberg_absorption": iceberg_info,
                 "bollinger_squeeze": squeeze_info,
-                "fractal_tensor": tensor_info
+                "fractal_tensor": tensor_info,
+                "ai_engine": ai_engine_data
             }
 
             # Composite Equity Score
@@ -2949,6 +3027,7 @@ class TechnicalAnalyzer:
                 "is_god_apex": is_god_apex,
                 "predatory_data": predatory_data,
                 "math_models": math_models,
+                "ai_engine": ai_engine_data,
                 "confluence_count": confluence_count,
                 "confluence_total": 24,
                 "smc_sweep": smc_sweep,

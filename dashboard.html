@@ -590,7 +590,7 @@
                     <div class="signal-details">
                         <div id="confidence-text" class="confidence">--%</div>
                         <div id="strength-text" class="strength">SCANNING CWALLET ROUND</div>
-                        <div id="action-hint" class="action-hint">Waiting for optimal 7s entry window...</div>
+                        <div id="action-hint" class="action-hint">Waiting for T-5s sniper execution window...</div>
                     </div>
 
                     <!-- Multi-Timeframe Alignment Radar -->
@@ -651,8 +651,121 @@
                 </div>
             </div>
 
+            <!-- AI Hedge Fund & Multi-Agent Chamber -->
+            <div class="ai-hedge-fund-chamber card" id="ai-agents-section" style="margin-top: 14px; border: 1px solid rgba(192, 132, 252, 0.3); background: linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(10, 15, 30, 0.98));">
+                <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 10px;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 20px;">🏛️</span>
+                        <div>
+                            <h2 style="margin: 0; font-size: 16px; color: #c084fc; letter-spacing: 0.5px;">AI HEDGE FUND &amp; MULTI-AGENT COUNCIL</h2>
+                            <span style="font-size: 11px; color: #94a3b8;">TradingAgents Bull/Bear Debate • AI Hedge Fund Legendary Investor Personas</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="sub-badge" id="ai-engine-provider-badge" style="background: rgba(192, 132, 252, 0.15); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.4);">⚡ Provider: Auto</span>
+                        <button id="btn-run-ai-audit" class="btn-action" style="background: linear-gradient(135deg, #a855f7, #7e22ce); color: white; border: none; padding: 6px 14px; border-radius: 6px; font-weight: 800; font-size: 12px; cursor: pointer; box-shadow: 0 0 12px rgba(168, 85, 247, 0.35);">⚡ Run Multi-Agent Audit</button>
+                    </div>
+                </div>
+
+                <!-- Overall Super-Consensus Banner -->
+                <div class="ai-consensus-hero" style="display: flex; justify-content: space-between; align-items: center; background: rgba(30, 41, 59, 0.6); padding: 12px 16px; border-radius: 8px; margin: 12px 0; border: 1px solid rgba(255, 255, 255, 0.05); flex-wrap: wrap; gap: 12px;">
+                    <div>
+                        <span style="font-size: 11px; color: #94a3b8; text-transform: uppercase; font-weight: 700; display: block;">HYBRID AI &amp; QUANT CONSENSUS</span>
+                        <div style="display: flex; align-items: baseline; gap: 10px; margin-top: 4px;">
+                            <span id="ai-consensus-stance" style="font-size: 22px; font-weight: 900; color: #10b981;">STRONG BUY</span>
+                            <span id="ai-consensus-conf" style="font-size: 14px; font-weight: 800; color: #38bdf8;">91.5% Confidence</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 16px; align-items: center;">
+                        <div style="text-align: right;">
+                            <span style="font-size: 11px; color: #94a3b8; display: block;">TRADER PROPOSAL</span>
+                            <span id="ai-trader-action" style="font-size: 13px; font-weight: 800; color: #f59e0b;">BUY @ Market • TP +1.5%</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="font-size: 11px; color: #94a3b8; display: block;">RISK MANAGER</span>
+                            <span id="ai-risk-status" style="font-size: 13px; font-weight: 800; color: #10b981;">🛡️ APPROVED (5% Alloc)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Legendary Investor Personas Row (AI Hedge Fund) -->
+                <div style="margin-top: 14px;">
+                    <div style="font-size: 12px; font-weight: 800; color: #e2e8f0; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px;">
+                        <span>👑</span> LEGENDARY INVESTOR COUNCIL (AI HEDGE FUND)
+                    </div>
+                    <div class="investor-cards-grid" id="investor-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px;">
+                        <!-- Buffett -->
+                        <div class="investor-card" style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <strong style="color: #f8fafc; font-size: 12px;">Warren Buffett</strong>
+                                <span class="badge" id="buffett-verdict" style="background: rgba(16, 185, 129, 0.2); color: #10b981; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800;">BUY</span>
+                            </div>
+                            <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Berkshire • Durable Moat</div>
+                            <div id="buffett-quote" style="font-size: 11px; color: #cbd5e1; line-height: 1.4; font-style: italic;">"Current market positioning offers acceptable margin of safety."</div>
+                        </div>
+                        <!-- Munger -->
+                        <div class="investor-card" style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <strong style="color: #f8fafc; font-size: 12px;">Charlie Munger</strong>
+                                <span class="badge" id="munger-verdict" style="background: rgba(16, 185, 129, 0.2); color: #10b981; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800;">BUY</span>
+                            </div>
+                            <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Daily Journal • Inversion</div>
+                            <div id="munger-quote" style="font-size: 11px; color: #cbd5e1; line-height: 1.4; font-style: italic;">"Invert, always invert. Market structure supports calculated accumulation."</div>
+                        </div>
+                        <!-- Graham -->
+                        <div class="investor-card" style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <strong style="color: #f8fafc; font-size: 12px;">Benjamin Graham</strong>
+                                <span class="badge" id="graham-verdict" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800;">BUY</span>
+                            </div>
+                            <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Deep Value • Net-Net</div>
+                            <div id="graham-quote" style="font-size: 11px; color: #cbd5e1; line-height: 1.4; font-style: italic;">"Statistical margin of safety meets quantitative hurdle."</div>
+                        </div>
+                        <!-- Lynch -->
+                        <div class="investor-card" style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <strong style="color: #f8fafc; font-size: 12px;">Peter Lynch</strong>
+                                <span class="badge" id="lynch-verdict" style="background: rgba(16, 185, 129, 0.2); color: #10b981; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800;">BUY</span>
+                            </div>
+                            <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Fidelity • Fast Growers</div>
+                            <div id="lynch-quote" style="font-size: 11px; color: #cbd5e1; line-height: 1.4; font-style: italic;">"Momentum and adoption metrics demonstrate expanding institutional velocity."</div>
+                        </div>
+                        <!-- Druckenmiller -->
+                        <div class="investor-card" style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <strong style="color: #f8fafc; font-size: 12px;">Stanley Druckenmiller</strong>
+                                <span class="badge" id="druck-verdict" style="background: rgba(168, 85, 247, 0.2); color: #c084fc; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800;">AGGRESSIVE</span>
+                            </div>
+                            <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Duquesne • Macro Liquidity</div>
+                            <div id="druck-quote" style="font-size: 11px; color: #cbd5e1; line-height: 1.4; font-style: italic;">"Macro liquidity regime and orderbook displacement indicate major expansion."</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TradingAgents Debate Chamber Grid -->
+                <div style="margin-top: 14px;">
+                    <div style="font-size: 12px; font-weight: 800; color: #e2e8f0; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 6px;">⚔️ BULL VS BEAR RESEARCHER DEBATE (TRADINGAGENTS)</span>
+                        <span id="debate-winner-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: 800;">CONSENSUS: BULLS WIN</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div style="background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px; padding: 12px;">
+                            <div style="color: #10b981; font-size: 12px; font-weight: 800; margin-bottom: 4px;">🟢 BULLISH RESEARCHER</div>
+                            <div id="bull-argument" style="font-size: 12px; color: #e2e8f0; line-height: 1.5;">Technical absorption has cleared lower liquidity, and trend momentum is confirmed.</div>
+                            <div id="bull-rebuttal" style="font-size: 11px; color: #94a3b8; margin-top: 6px; font-style: italic;">Rebuttal: Bearish arguments disregard the massive structural support and institutional spot bid.</div>
+                        </div>
+                        <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 8px; padding: 12px;">
+                            <div style="color: #ef4444; font-size: 12px; font-weight: 800; margin-bottom: 4px;">🔴 BEARISH RESEARCHER</div>
+                            <div id="bear-argument" style="font-size: 12px; color: #e2e8f0; line-height: 1.5;">Resistance overhead remains formidable. Any liquidity squeeze could trigger sharp mean-reversion.</div>
+                            <div id="bear-rebuttal" style="font-size: 11px; color: #94a3b8; margin-top: 6px; font-style: italic;">Rebuttal: Bulls are overestimating continuation without sufficient volume confirmation at high delta.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Signal Audit Log -->
             <div class="history-section card">
+
                 <div class="panel-header">
                     <h2>Cwallet Round Settlement Log</h2>
                     <span class="sub-badge">Last 20 Evaluated Rounds</span>
@@ -698,7 +811,7 @@
                             <li>That's it! It will continuously stream Cwallet's exact seconds and round strike to this dashboard in real time!</li>
                         </ol>
                     </div>
-                    <textarea id="bookmarklet-code" readonly style="width: 100%; height: 75px; background: #020617; color: #38bdf8; font-family: monospace; font-size: 11px; border: 1px solid #475569; border-radius: 6px; padding: 8px; box-sizing: border-box; resize: none;">(function(){if(window._cwSyncActive){alert('CW Auto-Sync is already running!');return;}window._cwSyncActive=true;var hud=document.createElement('div');hud.id='cw-bot-hud';hud.style.cssText='position:fixed;bottom:16px;right:16px;background:rgba(15,23,42,0.95);border:1px solid #c084fc;border-radius:8px;padding:8px 14px;color:#38bdf8;font-family:sans-serif;font-size:12px;font-weight:700;z-index:999999;box-shadow:0 4px 20px rgba(0,0,0,0.5);display:flex;gap:10px;align-items:center;';hud.innerHTML='<span style="color:#00e676;">🟢 CW SYNC ALIVE</span> <span id="cw-hud-sec">--s</span> <span id="cw-hud-strike">Strike: $--</span>';document.body.appendChild(hud);setInterval(function(){try{var text=document.body.innerText;var secMatch=text.match(/(\\d{1,2})\\s*s\\b/i);var sec=secMatch?parseInt(secMatch[1],10):null;var strikeMatch=text.match(/(?:Start|Strike|Open|Base|Price)[\\s\\:\\$]*([\\d,]+\\.\\d{2,4})/i);var p=strikeMatch?parseFloat(strikeMatch[1].replace(/,/g,'')):null;if(!p){var allPrices=text.match(/[\\$]?([1-9]\\d{1,5}(?:\\.\\d{2,4})?)/g);if(allPrices&&allPrices.length>0){p=parseFloat(allPrices[0].replace(/[\\$,]/g,''));}}if(sec!==null){var sEl=document.getElementById('cw-hud-sec');if(sEl)sEl.textContent=sec+'s left';}if(p){var pEl=document.getElementById('cw-hud-strike');if(pEl)pEl.textContent='Strike: $'+p.toFixed(2);}if(sec!==null&&sec>=1&&sec<=60){fetch('http://127.0.0.1:5000/api/sync_cwallet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({seconds_left:sec,open_price:p})}).catch(function(){});}}catch(e){}},1000);alert('🟢 CWALLET AUTO-SYNC CONNECTED!\\nLive Cwallet clock and strike are now streaming to your bot and HUD.');})();</textarea>
+                    <textarea id="bookmarklet-code" readonly style="width: 100%; height: 75px; background: #020617; color: #38bdf8; font-family: monospace; font-size: 11px; border: 1px solid #475569; border-radius: 6px; padding: 8px; box-sizing: border-box; resize: none;">(function(){if(window._cwSyncActive){alert('🟢 CW Auto-Sync is already active and streaming!');return;}window._cwSyncActive=true;var hud=document.getElementById('cw-bot-hud');if(!hud){hud=document.createElement('div');hud.id='cw-bot-hud';hud.style.cssText='position:fixed;bottom:16px;right:16px;background:rgba(15,23,42,0.95);border:1px solid #00e676;border-radius:8px;padding:8px 14px;color:#38bdf8;font-family:sans-serif;font-size:12px;font-weight:700;z-index:999999;box-shadow:0 4px 20px rgba(0,0,0,0.5);display:flex;gap:10px;align-items:center;';hud.innerHTML='<span style="color:#00e676;">🟢 CW SYNC ALIVE</span> <span id="cw-hud-phase" style="color:#f59e0b;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,0.15);">BETTING</span> <span id="cw-hud-sec" style="font-weight:800;color:#ffffff;">--s</span> <span id="cw-hud-strike" style="color:#38bdf8;">Strike: $--</span>';document.body.appendChild(hud);}var lastSec=null;var currentPhase='BETTING';setInterval(function(){try{var text=document.body.innerText||'';var isBattleText=/in\s*battle|battling|settling|battle\s*phase/i.test(text);var secMatch=text.match(/(\d{1,2})\s*s\b/i);var sec=secMatch?parseInt(secMatch[1],10):null;var strikeMatch=text.match(/(?:Start|Strike|Open|Base|Price)[\s\:\$]*([\d,]+\.\d{2,4})/i);var p=strikeMatch?parseFloat(strikeMatch[1].replace(/,/g,'')):null;if(!p){var allPrices=text.match(/[\$]?([1-9]\d{1,5}(?:\.\d{2,4})?)/g);if(allPrices&&allPrices.length>0){p=parseFloat(allPrices[0].replace(/[\$,]/g,''));}}if(sec!==null){if(isBattleText){currentPhase='BATTLE';}else if(sec>5){currentPhase='BETTING';}else if(sec<=5){if(lastSec!==null&&lastSec<=1&&currentPhase==='BETTING'){currentPhase='BATTLE';}else if(lastSec!==null&&lastSec<=1&&currentPhase==='BATTLE'){currentPhase='BETTING';}}lastSec=sec;var phEl=document.getElementById('cw-hud-phase');if(phEl){phEl.textContent=currentPhase;if(currentPhase==='BATTLE'){phEl.style.color='#ef4444';phEl.style.background='rgba(239,68,68,0.15)';}else{phEl.style.color='#f59e0b';phEl.style.background='rgba(245,158,11,0.15)';}}var sEl=document.getElementById('cw-hud-sec');if(sEl)sEl.textContent=sec+'s';}if(p){var pEl=document.getElementById('cw-hud-strike');if(pEl)pEl.textContent='Strike: $'+p.toFixed(2);}if(sec!==null&&sec>=0&&sec<=60){var payload=JSON.stringify({seconds_left:sec,open_price:p,phase:currentPhase});fetch('http://127.0.0.1:5000/api/sync_cwallet',{method:'POST',mode:'cors',headers:{'Content-Type':'application/json'},body:payload}).catch(function(){fetch('http://localhost:5000/api/sync_cwallet',{method:'POST',mode:'cors',headers:{'Content-Type':'application/json'},body:payload}).catch(function(){});});}}catch(e){console.warn('[CW Auto-Sync Error]',e);}},1000);alert('🟢 CWALLET AUTO-SYNC CONNECTED!\nLive Cwallet clock, phase, and strike are now streaming to TradeX.');})();</textarea>
                     <div style="display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end;">
                         <button id="btn-copy-bookmarklet" class="btn-pill" style="border-color: #00e676; color: #00e676; font-weight: 800;">📋 Copy Auto-Sync Code</button>
                         <button id="btn-done-modal" class="btn-pill" style="border-color: #94a3b8; color: #94a3b8;">Close</button>

@@ -219,7 +219,7 @@ function updateSyncOffsetDisplay() {
 updateSyncOffsetDisplay();
 
 function getSyncedSecondsLeft() {
-    const epochSec = Math.floor(Date.now() / 1000);
+    const epochSec = Date.now() / 1000;
     const pos = ((epochSec + syncOffset) % roundDuration + roundDuration) % roundDuration;
     let left = roundDuration - pos;
     if (left <= 0) left = roundDuration;
@@ -227,7 +227,7 @@ function getSyncedSecondsLeft() {
 }
 
 function getRoundPhaseAndTimes() {
-    const epochSec = Math.floor(Date.now() / 1000);
+    const epochSec = Date.now() / 1000;
     const pos = ((epochSec + syncOffset) % roundDuration + roundDuration) % roundDuration;
     const rId = Math.floor((epochSec + syncOffset) / roundDuration);
     let phase = 'BETTING';
@@ -257,19 +257,38 @@ function syncDurationToServer(dur) {
 }
 
 function setSyncTargetSecond(val, alertMsg = null) {
-    if (isNaN(val) || val < 1 || val > roundDuration) return;
-    const epochSec = Math.floor(Date.now() / 1000);
-    const targetPos = (roundDuration - val) % roundDuration;
+    if (isNaN(val)) return;
+    const epochSec = Date.now() / 1000;
+    let targetPos = 0;
+    let targetPhase = 'BETTING';
+
+    // Proper mapping for dual-phase (15s betting + 5s battle):
+    // If val is round start (15s or 20s), targetPos = 0 (15s betting countdown)
+    if (val >= bettingDuration || val >= roundDuration) {
+        targetPos = 0;
+        targetPhase = 'BETTING';
+    } else if (val <= 0) {
+        // 0s remaining in betting = Battle Start boundary (pos = 15)
+        targetPos = bettingDuration;
+        targetPhase = 'BATTLE';
+    } else {
+        // val is seconds remaining on the betting timer (e.g. 10s, 8s, 5s)
+        targetPos = (bettingDuration - val) % roundDuration;
+        targetPhase = 'BETTING';
+    }
+
     syncOffset = ((targetPos - (epochSec % roundDuration)) % roundDuration + roundDuration) % roundDuration;
     localStorage.setItem('cwallet_sync_offset', syncOffset);
     hasFiredRoundCall = false;
     roundAuthoritativeLocked = false;
     currentRoundBet = null;
-    roundSecondsLeft = val;
+    phaseSecondsLeft = (targetPos < bettingDuration) ? (bettingDuration - targetPos) : (roundDuration - targetPos);
+    roundSecondsLeft = roundDuration - targetPos;
+    currentPhase = targetPhase;
     updateSyncOffsetDisplay();
 
-    // If syncing to round start (20s / 15s bet start), instantly lock current price as round strike!
-    if (val === roundDuration && lastPrice) {
+    // If syncing to round start (15s bet start), instantly lock current price as round strike!
+    if (targetPos === 0 && lastPrice) {
         cwalletRoundOpenPrice = lastPrice;
         if (cwalletOpenPriceDisplay) {
             cwalletOpenPriceDisplay.textContent = `$${lastPrice.toFixed(2)}`;
@@ -279,9 +298,10 @@ function setSyncTargetSecond(val, alertMsg = null) {
 
     const payload = {
         seconds_left: val,
+        phase: targetPhase,
         sync_offset: syncOffset,
         round_duration: roundDuration,
-        open_price: (val === roundDuration && lastPrice) ? lastPrice : (cwalletRoundOpenPrice || undefined)
+        open_price: (targetPos === 0 && lastPrice) ? lastPrice : undefined
     };
 
     // Sync authoritative server-side RoundManager
@@ -296,7 +316,7 @@ function setSyncTargetSecond(val, alertMsg = null) {
     }).catch(e => console.warn('[syncCwallet Fetch Error]', e));
 
     if (alertMsg) speakTacticalAlert(alertMsg);
-    updateRoundHUD();
+    updateRoundHUD(targetPhase);
     renderMainSignalCard(latestSignalData);
 }
 
@@ -444,7 +464,7 @@ if (btnSync5) {
 
 if (btnSyncBattle) {
     btnSyncBattle.addEventListener('click', () => {
-        setSyncTargetSecond(battleDuration, 'Synced to 5s Battle Start (Strike Snapped).');
+        setSyncTargetSecond(0, 'Synced to 5s Battle Start (Strike Snapped).');
     });
 }
 
@@ -832,8 +852,10 @@ setInterval(() => {
     }
 
     // Precision sniper trigger: Server socket event `cwallet_sniper_call` is authoritative.
-    // Client fallback only acts as emergency safety if server did not emit and betting phase has <= 1s remaining.
-    if (phase === 'BETTING' && phaseSecondsLeft <= 1.0 && phaseSecondsLeft >= 0.2 && !hasFiredRoundCall && !roundAuthoritativeLocked) {
+    // Client instant trigger: At EXACTLY 5 seconds on the countdown timer (phaseSecondsLeft <= callLeadTime),
+    // fire immediately if server socket has not already fired, ensuring zero latency on the 5s mark!
+    const effectiveLeadTime = callLeadTime || 5;
+    if (phase === 'BETTING' && phaseSecondsLeft <= (effectiveLeadTime + 0.05) && phaseSecondsLeft >= 0.1 && !hasFiredRoundCall && !roundAuthoritativeLocked) {
         const dispatched = dispatchCwalletRoundCall(null, true);
         if (dispatched) {
             hasFiredRoundCall = true;
@@ -843,7 +865,7 @@ setInterval(() => {
 
     updateRoundHUD(phase);
     renderMainSignalCard(latestSignalData);
-}, 250);
+}, 50);
 
 // Authoritative Socket.IO listeners for server-side master round state & sniper calls
 if (typeof socket !== 'undefined' && socket) {
@@ -851,8 +873,7 @@ if (typeof socket !== 'undefined' && socket) {
         const savedOffset = parseInt(localStorage.getItem('cwallet_sync_offset') || '0', 10);
         socket.emit('sync_cwallet', {
             sync_offset: savedOffset,
-            round_duration: roundDuration,
-            open_price: cwalletRoundOpenPrice || undefined
+            round_duration: roundDuration
         });
     });
 
@@ -868,6 +889,7 @@ if (typeof socket !== 'undefined' && socket) {
             currentRoundBet = null;
             strikePriceK = null;
             battleRoundSnapped = -1;
+            cwalletRoundOpenPrice = null;
         }
         if (rState.round_duration) {
             roundDuration = rState.round_duration;
@@ -948,8 +970,9 @@ if (typeof socket !== 'undefined' && socket) {
             updateEarlyRadarVisual(sniperData);
             return;
         }
-        // IMMUTABLE ROUND LOCK: Once a call has been placed for this round, strictly lock and forbid any changes or flips
-        if (roundAuthoritativeLocked && currentRoundBet && currentRoundBet.round === roundNumber) {
+        // IMMUTABLE ROUND LOCK: Once an authoritative server call has locked, strictly forbid flips.
+        // If client triggered fallback at 5s, allow server call to enrich metadata without changing direction.
+        if (roundAuthoritativeLocked && currentRoundBet && currentRoundBet.round === roundNumber && !currentRoundBet.isFallback) {
             return;
         }
         hasFiredRoundCall = true;
@@ -1091,7 +1114,28 @@ function updateRoundHUD(serverPhase = null) {
     timerDisplay.textContent = `${secDisp}s`;
 
     if (roundTimerSub) {
-        roundTimerSub.textContent = activeP === 'BATTLE' ? '⚔️ Combat Battle (5s)' : 'Betting Countdown (15s)';
+        roundTimerSub.textContent = activeP === 'BATTLE' ? `⚔️ Combat Battle (${secDisp}s / 5s)` : `Betting Countdown (${secDisp}s / 15s)`;
+    }
+
+    // Dynamic Round Call Engine Time Badge
+    if (signalTime) {
+        if (activeMarketType === 'crypto') {
+            if (activeP === 'BETTING') {
+                if (phaseSecondsLeft > (callLeadTime || 5)) {
+                    signalTime.textContent = `T-${secDisp}s (R#${roundNumber})`;
+                    signalTime.style.color = '#38bdf8';
+                } else {
+                    signalTime.textContent = `🎯 T-${secDisp}s (BET NOW)`;
+                    signalTime.style.color = '#ff1744';
+                }
+            } else {
+                signalTime.textContent = `⚔️ BATTLE ${secDisp}s`;
+                signalTime.style.color = '#f59e0b';
+            }
+        } else {
+            signalTime.textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
+            signalTime.style.color = '#00e676';
+        }
     }
 
     // Update Battle Arena Strip elements
@@ -1206,21 +1250,21 @@ function dispatchCwalletRoundCall(serverCall = null, isFallback = false) {
     const openStrike = (serverCall && serverCall.open_strike) || cwalletRoundOpenPrice || (latestSignalData && latestSignalData.barrier_model ? latestSignalData.barrier_model.k : null) || price;
     const strikeDelta = (serverCall && serverCall.strike_delta !== undefined) ? serverCall.strike_delta : (price - openStrike);
     
-    // Asset-adaptive dynamic clearance threshold (Zero-Defect requires robust separation)
+    // Asset-adaptive dynamic clearance threshold (calibrated to signal_engine.py)
     const isZeroDefectActive = isZeroDefectEnabled || (serverCall && serverCall.zero_defect_mode);
-    let clearanceThresh = 7.00;
+    let clearanceThresh = 0.65;
     if (isZeroDefectActive) {
-        if (price >= 10000) clearanceThresh = Math.max(14.00, price * 0.00016); // At $86k BTC -> $14.00 to $16.00
-        else if (price >= 1000) clearanceThresh = Math.max(0.40, price * 0.00016);
-        else if (price >= 100) clearanceThresh = Math.max(0.04, price * 0.00018);
-        else if (price >= 1) clearanceThresh = Math.max(0.004, price * 0.00020);
-        else clearanceThresh = Math.max(0.00004, price * 0.00025);
+        if (price >= 10000) clearanceThresh = Math.max(1.20, price * 0.000015);
+        else if (price >= 1000) clearanceThresh = Math.max(0.12, price * 0.000015);
+        else if (price >= 100) clearanceThresh = Math.max(0.015, price * 0.000018);
+        else if (price >= 1) clearanceThresh = Math.max(0.0015, price * 0.000020);
+        else clearanceThresh = Math.max(0.00002, price * 0.000025);
     } else {
-        if (price >= 10000) clearanceThresh = Math.max(7.00, price * 0.00008);
-        else if (price >= 1000) clearanceThresh = Math.max(0.20, price * 0.00008);
-        else if (price >= 100) clearanceThresh = Math.max(0.02, price * 0.00010);
-        else if (price >= 1) clearanceThresh = Math.max(0.002, price * 0.00012);
-        else clearanceThresh = Math.max(0.00002, price * 0.00015);
+        if (price >= 10000) clearanceThresh = Math.max(0.65, price * 0.000008);
+        else if (price >= 1000) clearanceThresh = Math.max(0.065, price * 0.000008);
+        else if (price >= 100) clearanceThresh = Math.max(0.008, price * 0.000010);
+        else if (price >= 1) clearanceThresh = Math.max(0.0008, price * 0.000012);
+        else clearanceThresh = Math.max(0.00001, price * 0.000015);
     }
 
     // Directional Conviction Gate
@@ -1359,6 +1403,10 @@ function dispatchCwalletRoundCall(serverCall = null, isFallback = false) {
         if (window.TradexNative && typeof window.TradexNative.vibrate === 'function') {
             try {
                 window.TradexNative.vibrate(dir === 'UP' ? 180 : 380);
+            } catch (e) {}
+        } else if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+            try {
+                navigator.vibrate(dir === 'UP' ? [180] : [150, 80, 150]);
             } catch (e) {}
         }
     }
@@ -2636,16 +2684,19 @@ function updateGodModeHUD(data) {
     // 1. Confluence Meter
     if (elConf) {
         const count = data.confluence_count !== undefined ? data.confluence_count : (data.strength && data.strength.includes('APEX') ? 7 : (data.strength && data.strength.includes('GOD-MODE') ? 5 : 4));
-        const total = data.confluence_total || 7;
+        const total = data.confluence_total || 26;
         const scoreStr = data.confluence_score || `${count}/${total} APEX`;
-        if (data.is_lethal || (data.strength && data.strength.includes('LETHAL'))) {
+        if (total < 20 && (data.is_lethal || (data.strength && data.strength.includes('LETHAL')))) {
             elConf.textContent = '7/7 LETHAL';
             elConf.classList.add('highlight-gold');
         } else {
             elConf.textContent = scoreStr;
+            if (count >= 20 || (data.strength && (data.strength.includes('QUANTUM') || data.strength.includes('APEX')))) {
+                elConf.classList.add('highlight-gold');
+            }
         }
         if (elConfSub) {
-            elConfSub.textContent = count >= 6 ? 'All Models Aligned' : (count >= 5 ? 'High Multi-Model Bias' : (data.direction === 'WAIT' ? 'Shielded Equilibrium' : 'Confluence Scanning'));
+            elConfSub.textContent = count >= (total >= 20 ? 19 : 6) ? 'All Models Aligned' : (count >= (total >= 20 ? 15 : 5) ? 'High Multi-Model Bias' : (data.direction === 'WAIT' ? 'Shielded Equilibrium' : 'Confluence Scanning'));
         }
     }
 
@@ -2972,7 +3023,8 @@ function renderMainSignalCard(data) {
         const bDir = currentRoundBet.dir;
         const bConf = currentRoundBet.conf;
         const bEntry = cwalletRoundOpenPrice || currentRoundBet.entry;
-        const cwalletSecsToLock = Math.max(0, roundSecondsLeft - CWALLET_LOCK_BUFFER);
+        const secDisp = Math.max(0, Math.ceil(phaseSecondsLeft));
+        const isBettingWindow = (currentPhase === 'BETTING');
 
         if (bDir === 'UP') {
             let circleCls = 'signal-circle up';
@@ -2986,18 +3038,18 @@ function renderMainSignalCard(data) {
             setSignalCircleDisplay(tierLabel, 'UP', circleCls);
             confidenceText.textContent = `${bConf}% CONVICTION`;
 
-            if (roundSecondsLeft > CWALLET_LOCK_BUFFER) {
-                strengthText.textContent = currentRoundBet.isLethal ? `⚡ ☠️ PREDATORY LETHAL (${currentRoundBet.kelly || '4x'})` : (currentRoundBet.isGodApex ? `⚡ 🌌 GOD-LEVEL APEX (${currentRoundBet.kelly || '3x'})` : (currentRoundBet.isUniversal ? `🌌 UNIVERSAL APEX (${currentRoundBet.kelly || '3x'})` : (currentRoundBet.isGodMode ? `👑 GOD-MODE (${cwalletSecsToLock}s to Lock)` : `⚡ EXECUTE NOW (${cwalletSecsToLock}s to Lock)`)));
-                actionHint.textContent = `🎯 OFFICIAL CALL: BET UP ON CWALLET! | Strike: $${bEntry.toFixed(2)} | Sizing: ${currentRoundBet.kelly || '1x'} | Cwallet locks in ${cwalletSecsToLock}s!`;
+            if (isBettingWindow) {
+                strengthText.textContent = currentRoundBet.isLethal ? `⚡ ☠️ PREDATORY LETHAL (${currentRoundBet.kelly || '4x'})` : (currentRoundBet.isGodApex ? `⚡ 🌌 GOD-LEVEL APEX (${currentRoundBet.kelly || '3x'})` : (currentRoundBet.isUniversal ? `🌌 UNIVERSAL APEX (${currentRoundBet.kelly || '3x'})` : (currentRoundBet.isGodMode ? `👑 GOD-MODE (${secDisp}s to Lock)` : `⚡ EXECUTE NOW (${secDisp}s to Lock)`)));
+                actionHint.textContent = `🎯 OFFICIAL CALL: BET UP ON CWALLET! | Strike: $${bEntry.toFixed(2)} | Sizing: ${currentRoundBet.kelly || '1x'} | Cwallet locks in ${secDisp}s!`;
                 actionHint.style.color = currentRoundBet.isLethal ? '#ff1744' : (currentRoundBet.isGodApex ? '#38bdf8' : (currentRoundBet.isUniversal ? '#c084fc' : (currentRoundBet.isGodMode ? '#fbbf24' : '#00e676')));
             } else {
                 strengthText.textContent = currentRoundBet.isLethal ? `⚡ ☠️ PREDATORY LETHAL ROUND #${currentRoundBet.round} IN-PLAY` : (currentRoundBet.isGodApex ? `⚡ 🌌 GOD APEX ROUND #${currentRoundBet.round} IN-PLAY` : (currentRoundBet.isUniversal ? `🌌 UNIVERSAL ROUND #${currentRoundBet.round} IN-PLAY` : (currentRoundBet.isGodMode ? `👑 GOD-MODE ROUND #${currentRoundBet.round} IN-PLAY` : `🔒 ROUND #${currentRoundBet.round} IN-PLAY`)));
                 const diff = currentPrice - bEntry;
                 if (diff >= 0) {
-                    actionHint.textContent = `🟢 IN THE MONEY: +$${diff.toFixed(2)} (Cwallet Strike: $${bEntry.toFixed(2)})`;
+                    actionHint.textContent = `🟢 IN THE MONEY: +$${diff.toFixed(2)} vs Strike $${bEntry.toFixed(2)} (Battle ${secDisp}s)`;
                     actionHint.style.color = '#00e676';
                 } else {
-                    actionHint.textContent = `🔴 OUT OF THE MONEY: -$${Math.abs(diff).toFixed(2)} (Cwallet Strike: $${bEntry.toFixed(2)})`;
+                    actionHint.textContent = `🔴 OUT OF THE MONEY: -$${Math.abs(diff).toFixed(2)} vs Strike $${bEntry.toFixed(2)} (Battle ${secDisp}s)`;
                     actionHint.style.color = '#ff1744';
                 }
             }
@@ -3013,18 +3065,18 @@ function renderMainSignalCard(data) {
             setSignalCircleDisplay(tierLabel, 'DOWN', circleCls);
             confidenceText.textContent = `${bConf}% CONVICTION`;
 
-            if (roundSecondsLeft > CWALLET_LOCK_BUFFER) {
-                strengthText.textContent = currentRoundBet.isGodApex ? `⚡ 🌌 GOD-LEVEL APEX (${currentRoundBet.kelly || '3x'})` : (currentRoundBet.isUniversal ? `🌌 UNIVERSAL APEX (${currentRoundBet.kelly || '3x'})` : (currentRoundBet.isGodMode ? `👑 GOD-MODE (${cwalletSecsToLock}s to Lock)` : `⚡ EXECUTE NOW (${cwalletSecsToLock}s to Lock)`));
-                actionHint.textContent = `🎯 OFFICIAL CALL: BET DOWN ON CWALLET! | Strike: $${bEntry.toFixed(2)} | Sizing: ${currentRoundBet.kelly || '1x'} | Cwallet locks in ${cwalletSecsToLock}s!`;
+            if (isBettingWindow) {
+                strengthText.textContent = currentRoundBet.isGodApex ? `⚡ 🌌 GOD-LEVEL APEX (${currentRoundBet.kelly || '3x'})` : (currentRoundBet.isUniversal ? `🌌 UNIVERSAL APEX (${currentRoundBet.kelly || '3x'})` : (currentRoundBet.isGodMode ? `👑 GOD-MODE (${secDisp}s to Lock)` : `⚡ EXECUTE NOW (${secDisp}s to Lock)`));
+                actionHint.textContent = `🎯 OFFICIAL CALL: BET DOWN ON CWALLET! | Strike: $${bEntry.toFixed(2)} | Sizing: ${currentRoundBet.kelly || '1x'} | Cwallet locks in ${secDisp}s!`;
                 actionHint.style.color = currentRoundBet.isGodApex ? '#f43f5e' : (currentRoundBet.isUniversal ? '#c084fc' : (currentRoundBet.isGodMode ? '#fbbf24' : '#ff1744'));
             } else {
                 strengthText.textContent = currentRoundBet.isGodApex ? `⚡ 🌌 GOD APEX ROUND #${currentRoundBet.round} IN-PLAY` : (currentRoundBet.isUniversal ? `🌌 UNIVERSAL ROUND #${currentRoundBet.round} IN-PLAY` : (currentRoundBet.isGodMode ? `👑 GOD-MODE ROUND #${currentRoundBet.round} IN-PLAY` : `🔒 ROUND #${currentRoundBet.round} IN-PLAY`));
                 const diff = bEntry - currentPrice;
                 if (diff >= 0) {
-                    actionHint.textContent = `🟢 IN THE MONEY: +$${diff.toFixed(2)} (Cwallet Strike: $${bEntry.toFixed(2)})`;
+                    actionHint.textContent = `🟢 IN THE MONEY: +$${diff.toFixed(2)} vs Strike $${bEntry.toFixed(2)} (Battle ${secDisp}s)`;
                     actionHint.style.color = '#00e676';
                 } else {
-                    actionHint.textContent = `🔴 OUT OF THE MONEY: -$${Math.abs(diff).toFixed(2)} (Cwallet Strike: $${bEntry.toFixed(2)})`;
+                    actionHint.textContent = `🔴 OUT OF THE MONEY: -$${Math.abs(diff).toFixed(2)} vs Strike $${bEntry.toFixed(2)} (Battle ${secDisp}s)`;
                     actionHint.style.color = '#ff1744';
                 }
             }
@@ -3033,17 +3085,18 @@ function renderMainSignalCard(data) {
             setSignalCircleDisplay('STREAK SHIELD', 'PASS', 'signal-circle wait');
             confidenceText.textContent = 'STREAK SHIELD';
             strengthText.textContent = `ROUND #${currentRoundBet.round} SKIPPED (PASS)`;
-            actionHint.textContent = `Round #${currentRoundBet.round} Skipped: Low edge market. Capital protected! Next round in ${roundSecondsLeft}s.`;
+            const nextRoundSec = isBettingWindow ? (secDisp + 5) : secDisp;
+            actionHint.textContent = `Round #${currentRoundBet.round} Skipped: Low edge market. Capital protected! Next round in ${nextRoundSec}s.`;
             actionHint.style.color = '#94a3b8';
         }
         return;
     }
 
     // -------------------------------------------------------------
-    // PHASE 1: DATA ACCUMULATION & CHAMBERING (T-30s down to callLeadTime / 5s)
-    // NEVER bet or flip in Phase 1. Matrix accumulates 24 vectors quietly until T-5s!
+    // PHASE 1: DATA ACCUMULATION & CHAMBERING (T-15s down to callLeadTime / 5s)
+    // NEVER bet or flip in Phase 1. Matrix accumulates 26 vectors quietly until T-5s!
     // -------------------------------------------------------------
-    const secToCall = Math.max(0, roundSecondsLeft - callLeadTime);
+    const secToCall = Math.max(0, Math.ceil(phaseSecondsLeft - callLeadTime));
     const openStrike = cwalletRoundOpenPrice || (data.barrier_model ? data.barrier_model.k : null) || lastPrice || 0;
     const curP = lastPrice || openStrike;
     const dStrike = openStrike > 0 ? (curP - openStrike) : 0;
@@ -3053,15 +3106,15 @@ function renderMainSignalCard(data) {
         // T-8s to T-6s: Chambering Ready Phase
         setSignalCircleDisplay(`⚡ ${secToCall}s`, 'CHAMBER', 'signal-circle wait');
         confidenceText.textContent = `⚡ CHAMBERING READY`;
-        strengthText.textContent = `⚡ FINALIZING 24-VECTOR CONFLUENCE (Sniper in ${secToCall}s)`;
+        strengthText.textContent = `⚡ FINALIZING 26-VECTOR CONFLUENCE (Sniper in ${secToCall}s)`;
         actionHint.textContent = `⚡ Ready finger on Cwallet! Official Sniper prediction locks at EXACTLY ${callLeadTime}s mark (${secToCall}s left). Delta: ${dStr}`;
         actionHint.style.color = '#38bdf8';
     } else {
-        // T-30s to T-9s: Data Accumulation Phase
+        // T-15s to T-9s: Data Accumulation Phase
         setSignalCircleDisplay(`⏳ ${secToCall}s`, 'ANALYZING', 'signal-circle wait');
         confidenceText.textContent = `ROUND #${roundNumber} (ACCUMULATING)`;
-        strengthText.textContent = `⏳ ACCUMULATING 25s ORDER FLOW MATRIX (Δ ${dStr})`;
-        actionHint.textContent = `⏳ Synthesizing 24 quantitative vectors. Official bet prediction triggers at EXACTLY ${callLeadTime}s mark (${secToCall}s left).`;
+        strengthText.textContent = `⏳ ACCUMULATING ORDER FLOW MATRIX (Δ ${dStr})`;
+        actionHint.textContent = `⏳ Synthesizing 26 quantitative vectors. Official bet prediction triggers at EXACTLY ${callLeadTime}s mark (${secToCall}s left).`;
         actionHint.style.color = '#94a3b8';
     }
 }
@@ -3142,7 +3195,9 @@ socket.on('signal_update', (data) => {
     renderMainSignalCard(data);
     updateTradePlanDeck(data);
 
-    signalTime.textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
+    if (activeMarketType !== 'crypto') {
+        signalTime.textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
+    }
 
     // Macro Trend Badge
     const macroBadge = document.getElementById('macro-trend-badge');
@@ -3358,6 +3413,21 @@ socket.on('signal_update', (data) => {
     // Live L2 Order Book Depth Ladder
     if (data.order_flow) {
         updateDepthLadder(data.order_flow);
+    }
+
+    // Live AI Hedge Fund & Multi-Agent Council Telemetry
+    if (data.ai_engine && typeof updateAIChamberUI === 'function') {
+        const eng = data.ai_engine;
+        updateAIChamberUI({
+            provider_used: 'fast_engine',
+            overall_consensus: {
+                stance: eng.stance,
+                score: eng.score,
+                confidence_pct: eng.confidence
+            },
+            investor_council: eng.investor_council,
+            trading_agents: eng.trading_agents
+        });
     }
 });
 
@@ -3615,14 +3685,26 @@ function fetchInitialState() {
             }
 
             if (data.price) {
-                lastPrice = data.price;
-                updatePriceDisplay(data.price, 'neutral');
+                if (!socket || !socket.connected) {
+                    lastPrice = data.price;
+                    updatePriceDisplay(data.price, 'neutral');
+                }
                 if (cwalletRoundOpenPrice === null) {
                     cwalletRoundOpenPrice = data.price;
                     if (cwalletOpenPriceDisplay) {
                         cwalletOpenPriceDisplay.textContent = formatCurrency(data.price);
                     }
                 }
+            }
+
+            // Do not overwrite live WebSocket countdown clocks with lagging HTTP poll responses
+            if (data.cwallet_round && (!socket || !socket.connected)) {
+                const cr = data.cwallet_round;
+                if (cr.phase) currentPhase = cr.phase;
+                if (cr.phase_seconds_left !== undefined) phaseSecondsLeft = cr.phase_seconds_left;
+                if (cr.round_seconds_left !== undefined) roundSecondsLeft = cr.round_seconds_left;
+                if (cr.round_number !== undefined) roundNumber = cr.round_number;
+                updateRoundHUD(currentPhase);
             }
             if (data.last_signal) {
                 latestSignalData = data.last_signal;
@@ -3823,7 +3905,7 @@ function updateCwalletAreaHero() {
     const delta = openStrike > 0 ? (currentPrice - openStrike) : 0;
     const deltaSign = delta >= 0 ? '+' : '';
     const deltaBps = openStrike > 0 ? ((delta / openStrike) * 10000).toFixed(1) : '0.0';
-    const cwalletSecsToLock = Math.max(0, roundSecondsLeft - CWALLET_LOCK_BUFFER);
+    const cwalletSecsToLock = Math.max(0, Math.ceil(phaseSecondsLeft));
 
     // Update Telemetry Pills
     if (strikePill) strikePill.textContent = `OPEN STRIKE: $${openStrike > 0 ? openStrike.toFixed(2) : '--'}`;
@@ -3877,11 +3959,11 @@ function updateCwalletAreaHero() {
                     : `🎯 99% SNIPER CONFIRMED: BET UP NOW (Δ ${deltaSign}$${delta.toFixed(2)})`);
             }
 
-            if (roundSecondsLeft > CWALLET_LOCK_BUFFER) {
+            if (currentPhase === 'BETTING') {
                 if (headline) {
                     headline.textContent = isZdCall
-                        ? `🛡️ 🔥 100% ZERO-DEFECT SNIPER ACTIVE (ROUND #${roundNumber} | ${roundSecondsLeft}s LEFT):`
-                        : `⚡ CWALLET SNIPER ACTIVE (ROUND #${roundNumber} | ${roundSecondsLeft}s LEFT):`;
+                        ? `🛡️ 🔥 100% ZERO-DEFECT SNIPER ACTIVE (ROUND #${roundNumber} | ${cwalletSecsToLock}s LEFT):`
+                        : `⚡ CWALLET SNIPER ACTIVE (ROUND #${roundNumber} | ${cwalletSecsToLock}s LEFT):`;
                 }
                 if (actionSub) {
                     actionSub.innerHTML = isZdCall
@@ -3889,7 +3971,7 @@ function updateCwalletAreaHero() {
                         : `<strong style="color: #00e676; font-size: 14px;">👉 OPEN CWALLET BATTLE &rarr; TAP GREEN [UP] BUTTON NOW!</strong><br><span style="color: #94a3b8; font-size: 11px;">Open Strike: $${openStrike.toFixed(2)} (${deltaSign}${deltaBps} bps) | Win Prob: ${conf}% | ${kelly}</span>`;
                 }
             } else {
-                if (headline) headline.textContent = `🔒 CWALLET BETTING LOCKED (ROUND #${roundNumber} SETTLING):`;
+                if (headline) headline.textContent = `🔒 CWALLET BETTING LOCKED (ROUND #${roundNumber} BATTLE IN PLAY):`;
                 if (delta >= 0) {
                     if (actionSub) actionSub.innerHTML = `<strong style="color: #00e676;">🟢 IN THE MONEY: +$${delta.toFixed(2)} above strike!</strong> Position winning. Settling at 0s.`;
                 } else {
@@ -3905,11 +3987,11 @@ function updateCwalletAreaHero() {
                     : `🎯 99% SNIPER CONFIRMED: BET DOWN NOW (Δ -$${Math.abs(delta).toFixed(2)})`);
             }
 
-            if (roundSecondsLeft > CWALLET_LOCK_BUFFER) {
+            if (currentPhase === 'BETTING') {
                 if (headline) {
                     headline.textContent = isZdCall
-                        ? `🛡️ 🔥 100% ZERO-DEFECT SNIPER ACTIVE (ROUND #${roundNumber} | ${roundSecondsLeft}s LEFT):`
-                        : `⚡ CWALLET SNIPER ACTIVE (ROUND #${roundNumber} | ${roundSecondsLeft}s LEFT):`;
+                        ? `🛡️ 🔥 100% ZERO-DEFECT SNIPER ACTIVE (ROUND #${roundNumber} | ${cwalletSecsToLock}s LEFT):`
+                        : `⚡ CWALLET SNIPER ACTIVE (ROUND #${roundNumber} | ${cwalletSecsToLock}s LEFT):`;
                 }
                 if (actionSub) {
                     actionSub.innerHTML = isZdCall
@@ -3917,7 +3999,7 @@ function updateCwalletAreaHero() {
                         : `<strong style="color: #ff1744; font-size: 14px;">👉 OPEN CWALLET BATTLE &rarr; TAP RED [DOWN] BUTTON NOW!</strong><br><span style="color: #94a3b8; font-size: 11px;">Open Strike: $${openStrike.toFixed(2)} (-${Math.abs(deltaBps)} bps) | Win Prob: ${conf}% | ${kelly}</span>`;
                 }
             } else {
-                if (headline) headline.textContent = `🔒 CWALLET BETTING LOCKED (ROUND #${roundNumber} SETTLING):`;
+                if (headline) headline.textContent = `🔒 CWALLET BETTING LOCKED (ROUND #${roundNumber} BATTLE IN PLAY):`;
                 if (delta <= 0) {
                     if (actionSub) actionSub.innerHTML = `<strong style="color: #00e676;">🟢 IN THE MONEY: -$${Math.abs(delta).toFixed(2)} below strike!</strong> Position winning. Settling at 0s.`;
                 } else {
@@ -3928,9 +4010,9 @@ function updateCwalletAreaHero() {
         return;
     }
 
-    // 2. PHASE: EARLY ROUND ACTIVE GUIDANCE (Seconds 30 down to callLeadTime)
-    const secsUntilSniper = Math.max(0, roundSecondsLeft - callLeadTime);
-    const progressPct = Math.min(100, Math.round(((30 - roundSecondsLeft) / Math.max(1, 30 - callLeadTime)) * 100));
+    // 2. PHASE: EARLY ROUND ACTIVE GUIDANCE (Seconds 15 down to callLeadTime)
+    const secsUntilSniper = Math.max(0, Math.ceil(phaseSecondsLeft - callLeadTime));
+    const progressPct = Math.min(100, Math.round(((bettingDuration - phaseSecondsLeft) / Math.max(1, bettingDuration - callLeadTime)) * 100));
 
     const isEarlyBull = (delta >= 0.25) || (latestSignalData && latestSignalData.direction === 'UP' && delta >= -0.10);
     const isEarlyBear = (delta <= -0.25) || (latestSignalData && latestSignalData.direction === 'DOWN' && delta <= 0.10);
@@ -3972,4 +4054,177 @@ if (btnToggleMath && collapsibleMath) {
             : '📐 Quantitative Mathematical Core (Stochastic SDE & Entropy) • [Show]';
     });
 }
+
+// ==============================================================================
+// AI HEDGE FUND & MULTI-AGENT COUNCIL CONTROLLER (TradingAgents + AI Hedge Fund)
+// ==============================================================================
+const btnRunAIAudit = document.getElementById('btn-run-ai-audit');
+const aiEngineProviderBadge = document.getElementById('ai-engine-provider-badge');
+const aiConsensusStance = document.getElementById('ai-consensus-stance');
+const aiConsensusConf = document.getElementById('ai-consensus-conf');
+const aiTraderAction = document.getElementById('ai-trader-action');
+const aiRiskStatus = document.getElementById('ai-risk-status');
+
+const buffettVerdict = document.getElementById('buffett-verdict');
+const buffettQuote = document.getElementById('buffett-quote');
+const mungerVerdict = document.getElementById('munger-verdict');
+const mungerQuote = document.getElementById('munger-quote');
+const grahamVerdict = document.getElementById('graham-verdict');
+const grahamQuote = document.getElementById('graham-quote');
+const lynchVerdict = document.getElementById('lynch-verdict');
+const lynchQuote = document.getElementById('lynch-quote');
+const druckVerdict = document.getElementById('druck-verdict');
+const druckQuote = document.getElementById('druck-quote');
+
+const debateWinnerBadge = document.getElementById('debate-winner-badge');
+const bullArgument = document.getElementById('bull-argument');
+const bullRebuttal = document.getElementById('bull-rebuttal');
+const bearArgument = document.getElementById('bear-argument');
+const bearRebuttal = document.getElementById('bear-rebuttal');
+
+function updateAIChamberUI(data) {
+    if (!data) return;
+    if (data.provider_used && aiEngineProviderBadge) {
+        const provName = data.provider_used === 'gemini' ? 'Google Gemini' :
+                         (data.provider_used === 'openai' ? 'OpenAI GPT-4o' :
+                         (data.provider_used === 'anthropic' ? 'Claude 3.5' :
+                         (data.provider_used === 'deepseek' ? 'DeepSeek R1' : 'Quant Heuristic')));
+        aiEngineProviderBadge.textContent = `⚡ Engine: ${provName}`;
+    }
+
+    const oc = data.overall_consensus;
+    if (oc) {
+        if (aiConsensusStance) {
+            aiConsensusStance.textContent = oc.stance ? oc.stance.replace(/_/g, ' ') : 'NEUTRAL';
+            if (oc.stance && oc.stance.includes('BUY')) {
+                aiConsensusStance.style.color = '#10b981';
+            } else if (oc.stance && oc.stance.includes('SELL')) {
+                aiConsensusStance.style.color = '#ef4444';
+            } else {
+                aiConsensusStance.style.color = '#f59e0b';
+            }
+        }
+        if (aiConsensusConf) {
+            aiConsensusConf.textContent = `${oc.confidence_pct || 85.0}% Confidence`;
+        }
+    }
+
+    const agents = data.trading_agents;
+    if (agents) {
+        if (agents.trader_proposal && aiTraderAction) {
+            const tp = agents.trader_proposal;
+            aiTraderAction.textContent = `${tp.action || 'HOLD'} @ $${(tp.entry_price || 0).toLocaleString()} • TP: $${(tp.target_take_profit || 0).toLocaleString()}`;
+        }
+        if (agents.risk_manager && aiRiskStatus) {
+            const rm = agents.risk_manager;
+            aiRiskStatus.textContent = `🛡️ ${rm.status || 'APPROVED'} (${rm.max_portfolio_allocation_pct || 5}% Alloc)`;
+        }
+        if (agents.debate) {
+            const deb = agents.debate;
+            if (debateWinnerBadge) {
+                const w = (deb.consensus_winner || deb.winner || 'TIE').toUpperCase();
+                if (w.includes('BEAR')) {
+                    debateWinnerBadge.textContent = 'CONSENSUS: BEARS WIN';
+                    debateWinnerBadge.style.color = '#ef4444';
+                    debateWinnerBadge.style.background = 'rgba(239, 68, 68, 0.2)';
+                } else if (w.includes('BULL')) {
+                    debateWinnerBadge.textContent = 'CONSENSUS: BULLS WIN';
+                    debateWinnerBadge.style.color = '#10b981';
+                    debateWinnerBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+                } else {
+                    debateWinnerBadge.textContent = 'CONSENSUS: DEADLOCK / TIE';
+                    debateWinnerBadge.style.color = '#f59e0b';
+                    debateWinnerBadge.style.background = 'rgba(245, 158, 11, 0.2)';
+                }
+            }
+            if (deb.bullish_researcher) {
+                if (bullArgument) bullArgument.textContent = deb.bullish_researcher.argument || '';
+                if (bullRebuttal) bullRebuttal.textContent = `Rebuttal: ${deb.bullish_researcher.rebuttal || ''}`;
+            }
+            if (deb.bearish_researcher) {
+                if (bearArgument) bearArgument.textContent = deb.bearish_researcher.argument || '';
+                if (bearRebuttal) bearRebuttal.textContent = `Rebuttal: ${deb.bearish_researcher.rebuttal || ''}`;
+            }
+        }
+    }
+
+    const council = data.investor_council;
+    if (council) {
+        if (council.buffett) {
+            if (buffettVerdict) buffettVerdict.textContent = council.buffett.verdict || 'BUY';
+            if (buffettQuote) buffettQuote.textContent = `"${council.buffett.quote || ''}"`;
+        }
+        if (council.munger) {
+            if (mungerVerdict) mungerVerdict.textContent = council.munger.verdict || 'BUY';
+            if (mungerQuote) mungerQuote.textContent = `"${council.munger.quote || ''}"`;
+        }
+        if (council.graham) {
+            if (grahamVerdict) grahamVerdict.textContent = council.graham.verdict || 'BUY';
+            if (grahamQuote) grahamQuote.textContent = `"${council.graham.quote || ''}"`;
+        }
+        if (council.lynch) {
+            if (lynchVerdict) lynchVerdict.textContent = council.lynch.verdict || 'BUY';
+            if (lynchQuote) lynchQuote.textContent = `"${council.lynch.quote || ''}"`;
+        }
+        if (council.druckenmiller) {
+            if (druckVerdict) druckVerdict.textContent = council.druckenmiller.verdict || 'AGGRESSIVE';
+            if (druckQuote) druckQuote.textContent = `"${council.druckenmiller.quote || ''}"`;
+        }
+    }
+}
+
+// Request audit on button click
+if (btnRunAIAudit) {
+    btnRunAIAudit.addEventListener('click', () => {
+        btnRunAIAudit.textContent = '⏳ Auditing Multi-Agents...';
+        btnRunAIAudit.disabled = true;
+
+        const sym = (typeof activeSymbol !== 'undefined' && activeSymbol) ? activeSymbol : 'btcusdt';
+
+        // 1. Direct high-speed REST fetch for immediate instant UI update (force fresh calculation)
+        fetch('/api/ai/consensus?force=1&symbol=' + encodeURIComponent(sym))
+            .then(r => r.json())
+            .then(data => {
+                updateAIChamberUI(data);
+                btnRunAIAudit.textContent = '⚡ Run Multi-Agent Audit';
+                btnRunAIAudit.disabled = false;
+                if (typeof speakTacticalAlert === 'function') {
+                    const stance = (data.overall_consensus && data.overall_consensus.stance) ? data.overall_consensus.stance.replace(/_/g, ' ') : 'Updated';
+                    speakTacticalAlert(`Multi-Agent Council consensus: ${stance}`);
+                }
+            })
+            .catch(err => {
+                console.error('[AI Audit Error]', err);
+                btnRunAIAudit.textContent = '⚡ Run Multi-Agent Audit';
+                btnRunAIAudit.disabled = false;
+            });
+
+        // 2. Also emit over Socket.IO for server broadcast
+        if (typeof socket !== 'undefined' && socket && socket.connected) {
+            socket.emit('request_ai_analysis', { symbol: sym });
+        }
+    });
+}
+
+// Listen for Socket.IO updates
+if (typeof socket !== 'undefined' && socket) {
+    socket.on('ai_analysis_complete', (data) => {
+        updateAIChamberUI(data);
+        if (btnRunAIAudit) {
+            btnRunAIAudit.textContent = '⚡ Run Multi-Agent Audit';
+            btnRunAIAudit.disabled = false;
+        }
+    });
+}
+
+// Initial fetch on page load
+setTimeout(() => {
+    const sym = (typeof activeSymbol !== 'undefined' && activeSymbol) ? activeSymbol : 'btcusdt';
+    fetch('/api/ai/consensus?symbol=' + encodeURIComponent(sym))
+        .then(r => r.json())
+        .then(data => updateAIChamberUI(data))
+        .catch(() => {});
+}, 1200);
+
+
 

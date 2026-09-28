@@ -12,6 +12,11 @@ from analysis import TechnicalAnalyzer
 from models.renaissance_hmm import RenaissanceHMM
 from models.cont_stoikov import ContStoikovQueue
 from models.bouchaud_propagator import BouchaudPropagator
+from models.hsmm_regime import HiddenSemiMarkovModel
+from models.ou_sde_solver import OrnsteinUhlenbeckSolver
+from models.hawkes_point_process import HawkesPointProcess
+from models.merton_jump_diffusion import MertonJumpDiffusion
+from models.avellaneda_stoikov import AvellanedaStoikovModel
 
 # Configurable gate thresholds
 WALL_THRESHOLD = 2.0  # BTC depth within $2‑$5 of strike
@@ -34,6 +39,11 @@ class SignalEngine:
         self.lock = threading.Lock()
 
         self.renaissance_hmm = RenaissanceHMM()
+        self.hsmm = HiddenSemiMarkovModel()
+        self.ou_solver = OrnsteinUhlenbeckSolver(z_threshold=OU_Z_THRESH)
+        self.hawkes_process = HawkesPointProcess()
+        self.merton_solver = MertonJumpDiffusion()
+        self.avellaneda_stoikov = AvellanedaStoikovModel()
         self.cont_stoikov = ContStoikovQueue()
         self.bouchaud = BouchaudPropagator()
         self.pending_predictions = deque()
@@ -183,7 +193,8 @@ class SignalEngine:
                 smc_sweep=smc_sweep,
                 fvg_data=fvg_data,
                 predatory_data=predatory_data,
-                math_models=math_models
+                math_models=math_models,
+                ai_engine=scan.get("ai_engine", {})
             )
 
         scan = self.analyzer.analyze_all(df, order_flow=order_flow, round_open_price=round_open_price, time_left=time_left, round_info=round_info)
@@ -229,7 +240,9 @@ class SignalEngine:
                 kelly_unit="0x (PASS)",
                 currency_symbol=curr_sym,
                 trade_setup=frozen_setup,
-                trader_note=frozen_note
+                trader_note=frozen_note,
+                confluence_count=0,
+                ai_engine=scan.get("ai_engine", {})
             )
 
         # Extract deep quantitative indicator scores
@@ -367,7 +380,7 @@ class SignalEngine:
         a13_roll = roll_score
         a14_ou = -float(np.tanh(ou_z / 1.8))
         a15_amihud = amihud_score
-        if markov_st in ("TREND_MOMENTUM", "TREND_UP", "TRENDING", "TRENDING_UP"):
+        if markov_st in ("TREND_MOMENTUM", "TREND_MOMENTUM_PERSIST", "TREND_UP", "TRENDING", "TRENDING_UP"):
             m_dir = 1.0 if (recent_mom >= 0 and vel_3s >= 0) else (-1.0 if (recent_mom < 0 and vel_3s < 0) else (1.0 if recent_mom >= 0 else -1.0))
             a16_markov = float(m_dir * markov_p)
         elif markov_st in ("TREND_DOWN", "TRENDING_DOWN"):
@@ -388,37 +401,45 @@ class SignalEngine:
         a23_queue_grad = queue_grad_score
         a24_basis = basis_score
 
-        # Compute additional model scores
-        a25_hmm = self.renaissance_hmm.compute(df)
-        a26_cont_stoikov = self.cont_stoikov.compute(order_flow)
-        a27_bouchaud = self.bouchaud.compute(0.25, delta_5s, time_left)
+        # Vectors 25 & 26: AI Hedge Fund Personas & TradingAgents Multi-Agent Debate
+        ai_engine = scan.get("ai_engine", {})
+        a25_ai_hedge_fund = float(ind_scores.get('AI Hedge Fund Investor Council', ai_engine.get('investor_score', 0.0)))
+        a26_trading_agents = float(ind_scores.get('TradingAgents Debate & Risk Gate', ai_engine.get('debate_score', 0.0)))
 
-        # Comprehensive 24-Vector Institutional Composite (weights sum to 1.0):
+        # Compute additional model scores
+        a27_hmm = self.renaissance_hmm.compute(df)
+        a28_cont_stoikov = self.cont_stoikov.compute(order_flow)
+        a29_bouchaud = self.bouchaud.compute(0.25, delta_5s, time_left)
+
+        # Comprehensive 26-Vector Institutional & Multi-Agent Composite (weights sum to 1.0):
+        # AI Hedge Fund & TradingAgents Council have FIRST PRIORITY (30% total composite weight)
         raw_composite = (
-            (a1_barrier * 0.09) +
-            (a2_hawkes * 0.08) +
-            (a3_lead_lag * 0.07) +
-            (a4_merton * 0.07) +
-            (a5_path * 0.06) +
-            (a6_consensus * 0.05) +
-            (a7_kalman * 0.05) +
-            (a8_bayes * 0.05) +
-            (a9_wall * 0.04) +
-            (a10_tri * 0.04) +
-            (a11_queue * 0.04) +
-            (a12_cvd * 0.04) +
-            (a13_roll * 0.03) +
-            (a14_ou * 0.03) +
-            (a15_amihud * 0.03) +
-            (a16_markov * 0.03) +
-            (a17_avell * 0.03) +
-            (a18_gkyz * 0.03) +
-            (a19_hurst * 0.03) +
-            (a20_bouchaud * 0.04) +
-            (a21_almgren * 0.03) +
+            (a1_barrier * 0.06) +
+            (a2_hawkes * 0.05) +
+            (a3_lead_lag * 0.04) +
+            (a4_merton * 0.04) +
+            (a5_path * 0.04) +
+            (a6_consensus * 0.03) +
+            (a7_kalman * 0.03) +
+            (a8_bayes * 0.03) +
+            (a9_wall * 0.03) +
+            (a10_tri * 0.03) +
+            (a11_queue * 0.03) +
+            (a12_cvd * 0.03) +
+            (a13_roll * 0.02) +
+            (a14_ou * 0.02) +
+            (a15_amihud * 0.02) +
+            (a16_markov * 0.02) +
+            (a17_avell * 0.02) +
+            (a18_gkyz * 0.02) +
+            (a19_hurst * 0.02) +
+            (a20_bouchaud * 0.02) +
+            (a21_almgren * 0.02) +
             (a22_feller * 0.02) +
-            (a23_queue_grad * 0.03) +
-            (a24_basis * 0.03)
+            (a23_queue_grad * 0.02) +
+            (a24_basis * 0.02) +
+            (a25_ai_hedge_fund * 0.15) +
+            (a26_trading_agents * 0.15)
         )
 
         # Adaptive anti-flicker smoothing
@@ -548,8 +569,8 @@ class SignalEngine:
         v13_bear = (sigma_gkyz > 0.00005 and recent_mom <= 0.0)
 
         # 14. 3-State Markov Transition Persistence
-        v14_bull = (markov_st in ("TREND_MOMENTUM", "TRENDING_UP", "TREND_UP", "VOLATILE_TREND") and recent_mom >= 0.0) or (recent_mom > 0.10)
-        v14_bear = (markov_st in ("TREND_MOMENTUM", "TRENDING_DOWN", "TREND_DOWN", "VOLATILE_TREND") and recent_mom <= 0.0) or (recent_mom < -0.10)
+        v14_bull = (markov_st in ("TREND_MOMENTUM", "TREND_MOMENTUM_PERSIST", "TRENDING_UP", "TREND_UP", "VOLATILE_TREND") and recent_mom >= 0.0) or (recent_mom > 0.10)
+        v14_bear = (markov_st in ("TREND_MOMENTUM", "TREND_MOMENTUM_PERSIST", "TRENDING_DOWN", "TREND_DOWN", "VOLATILE_TREND") and recent_mom <= 0.0) or (recent_mom < -0.10)
 
         # 15. Avellaneda-Stoikov Dealer Skew
         v15_bull = (avell_skew > 0.01)
@@ -592,28 +613,59 @@ class SignalEngine:
         v24_bull = (basis_delta > 0.01)
         v24_bear = (basis_delta < -0.01)
 
+        # 25. AI Hedge Fund Investor Council (Buffett, Munger, Graham, Lynch, Druckenmiller)
+        v25_bull = (a25_ai_hedge_fund >= 0.15)
+        v25_bear = (a25_ai_hedge_fund <= -0.15)
+
+        # 26. TradingAgents Multi-Agent Debate & Risk Management Gate
+        v26_bull = (a26_trading_agents >= 0.15) and (ai_engine.get("risk_status") != "REJECTED")
+        v26_bear = (a26_trading_agents <= -0.15) and (ai_engine.get("risk_status") != "REJECTED")
+
         bull_vectors = [
             v1_bull, v2_bull, v3_bull, v4_bull, v5_bull, v6_bull, v7_bull, v8_bull,
             v9_bull, v10_bull, v11_bull, v12_bull, v13_bull, v14_bull, v15_bull, v16_bull,
-            v17_bull, v18_bull, v19_bull, v20_bull, v21_bull, v22_bull, v23_bull, v24_bull
+            v17_bull, v18_bull, v19_bull, v20_bull, v21_bull, v22_bull, v23_bull, v24_bull,
+            v25_bull, v26_bull
         ]
         bear_vectors = [
             v1_bear, v2_bear, v3_bear, v4_bear, v5_bear, v6_bear, v7_bear, v8_bear,
             v9_bear, v10_bear, v11_bear, v12_bear, v13_bear, v14_bear, v15_bear, v16_bear,
-            v17_bear, v18_bear, v19_bear, v20_bear, v21_bear, v22_bear, v23_bear, v24_bear
+            v17_bear, v18_bear, v19_bear, v20_bear, v21_bear, v22_bear, v23_bear, v24_bear,
+            v25_bear, v26_bear
         ]
 
         bull_confluence = sum(1 for v in bull_vectors if v)
         bear_confluence = sum(1 for v in bear_vectors if v)
 
-        min_confluence = 14 if zd_active else 12
+        min_confluence = 15 if zd_active else 13
         conf_lead = 4 if zd_active else 2
+
+        # 👑 AI COUNCIL FIRST PRIORITY: THE SUPREME DIRECTIONAL MANDATE
+        ai_score = float(ai_engine.get("score", 0.0))
+        ai_sig = int(ai_engine.get("signal", 0))
+        ai_veto = bool(ai_engine.get("veto", False))
+        risk_status = str(ai_engine.get("risk_status", "APPROVED"))
+        risk_approved = (risk_status != "REJECTED") and not ai_veto
+
+        ai_permits_bull = (
+            risk_approved
+            and not (v25_bear and v26_bear)
+            and ai_score > -0.15
+            and ai_sig >= 0
+        )
+        ai_permits_bear = (
+            risk_approved
+            and not (v25_bull and v26_bull)
+            and ai_score < 0.15
+            and ai_sig <= 0
+        )
 
         is_bull = (
             delta_strike >= clearance_thresh
             and bull_confluence >= min_confluence
             and (bull_confluence - bear_confluence) >= conf_lead
             and not ask_iceberg_blocking
+            and ai_permits_bull
         )
 
         is_bear = (
@@ -621,6 +673,7 @@ class SignalEngine:
             and bear_confluence >= min_confluence
             and (bear_confluence - bull_confluence) >= conf_lead
             and not bid_iceberg_blocking
+            and ai_permits_bear
         )
 
         if is_bull and not is_bear:
@@ -647,16 +700,26 @@ class SignalEngine:
         if direction == 'UP' and ask_wall_btc >= 3.0 and abs(delta_strike) < 2.0:
             direction = 'WAIT'
 
+        # 4. AI Multi-Agent Council & Munger Inversion Veto
+        if (ai_veto or not risk_approved) and direction in ('UP', 'DOWN'):
+            direction = 'WAIT'
+
+        # 5. Supreme AI Directional Mandate Enforcement
+        if direction == 'UP' and not ai_permits_bull:
+            direction = 'WAIT'
+        if direction == 'DOWN' and not ai_permits_bear:
+            direction = 'WAIT'
+
         self.prev_direction = direction
 
         # =============================================================
-        # 🌌 QUANTITATIVE CONVICTION HIERARCHY & KELLY SIZING (24 VECTORS)
+        # 🌌 QUANTITATIVE CONVICTION HIERARCHY & KELLY SIZING (26 VECTORS)
         # =============================================================
         confluence_count = bull_confluence if direction == 'UP' else (bear_confluence if direction == 'DOWN' else max(bull_confluence, bear_confluence))
 
         if direction == 'UP':
-            if confluence_count >= 20:
-                strength = f"🔥 👑 100% QUANTUM APEX: BET UP NOW ({confluence_count}/24 CONFLUENCE | ZERO RISK RUNAWAY)"
+            if confluence_count >= 21:
+                strength = f"🔥 👑 100% QUANTUM APEX: BET UP NOW ({confluence_count}/26 CONFLUENCE | AI HEDGE FUND CONFIRMED)"
                 confidence = 99.9
                 kelly_unit = "5x MAXIMUM INFALLIBLE UNIT"
                 crypto_is_omniscient = True
@@ -664,8 +727,8 @@ class SignalEngine:
                 crypto_is_god = True
                 crypto_is_lethal = True
                 is_zero_defect = True
-            elif confluence_count >= 18:
-                strength = f"👑 ☠️ OMNISCIENT GOD-TIER APEX: BET UP NOW ({confluence_count}/24 CONFLUENCE)"
+            elif confluence_count >= 19:
+                strength = f"👑 ☠️ OMNISCIENT GOD-TIER APEX: BET UP NOW ({confluence_count}/26 CONFLUENCE)"
                 confidence = 99.0
                 kelly_unit = "4x LETHAL APEX UNIT"
                 crypto_is_omniscient = True
@@ -674,8 +737,8 @@ class SignalEngine:
                 crypto_is_lethal = True
                 is_zero_defect = False
             else:
-                strength = f"🌌 GOD-LEVEL APEX: BET UP NOW ({confluence_count}/24 CONFLUENCE)"
-                confidence = 97.5
+                strength = f"🌌 GOD-LEVEL APEX: BET UP NOW ({confluence_count}/26 CONFLUENCE)"
+                confidence = 98.2
                 kelly_unit = "3x MAX UNIT"
                 crypto_is_apex = True
                 crypto_is_god = True
@@ -683,8 +746,8 @@ class SignalEngine:
                 crypto_is_omniscient = False
                 is_zero_defect = False
         elif direction == 'DOWN':
-            if confluence_count >= 20:
-                strength = f"🔥 👑 100% QUANTUM APEX: BET DOWN NOW ({confluence_count}/24 CONFLUENCE | ZERO RISK RUNAWAY)"
+            if confluence_count >= 21:
+                strength = f"🔥 👑 100% QUANTUM APEX: BET DOWN NOW ({confluence_count}/26 CONFLUENCE | AI HEDGE FUND CONFIRMED)"
                 confidence = 99.9
                 kelly_unit = "5x MAXIMUM INFALLIBLE UNIT"
                 crypto_is_omniscient = True
@@ -692,8 +755,8 @@ class SignalEngine:
                 crypto_is_god = True
                 crypto_is_lethal = True
                 is_zero_defect = True
-            elif confluence_count >= 18:
-                strength = f"👑 ☠️ OMNISCIENT GOD-TIER APEX: BET DOWN NOW ({confluence_count}/24 CONFLUENCE)"
+            elif confluence_count >= 19:
+                strength = f"👑 ☠️ OMNISCIENT GOD-TIER APEX: BET DOWN NOW ({confluence_count}/26 CONFLUENCE)"
                 confidence = 99.0
                 kelly_unit = "4x LETHAL APEX UNIT"
                 crypto_is_omniscient = True
@@ -702,8 +765,8 @@ class SignalEngine:
                 crypto_is_lethal = True
                 is_zero_defect = False
             else:
-                strength = f"🌌 GOD-LEVEL APEX: BET DOWN NOW ({confluence_count}/24 CONFLUENCE)"
-                confidence = 97.5
+                strength = f"🌌 GOD-LEVEL APEX: BET DOWN NOW ({confluence_count}/26 CONFLUENCE)"
+                confidence = 98.2
                 kelly_unit = "3x MAX UNIT"
                 crypto_is_apex = True
                 crypto_is_god = True
@@ -712,7 +775,12 @@ class SignalEngine:
                 is_zero_defect = False
         else:
             confidence = 50.0
-            if abs(delta_strike) < clearance_thresh:
+            if ai_veto or not risk_approved:
+                v_note = ai_engine.get("trading_agents", {}).get("risk_manager", {}).get("note", "Munger Inversion Obstacle Trap")
+                strength = f"🛡️ CAPITAL SHIELD: AI COUNCIL RISK VETO ({v_note})"
+            elif not ai_permits_bull and not ai_permits_bear:
+                strength = "🛡️ CAPITAL SHIELD: AI COUNCIL NEUTRAL PASS (NO ASYMMETRIC EDGE)"
+            elif abs(delta_strike) < clearance_thresh:
                 strength = f"🛡️ CAPITAL SHIELD: FLAT CHOP PASS (Δ {delta_strike:+.2f}$ < ${clearance_thresh:.2f})"
             elif feller_ratio < 0.50:
                 strength = f"🛡️ CAPITAL SHIELD: FELLER VOL EXPLOSION VETO (Ratio {feller_ratio:.2f})"
@@ -721,7 +789,7 @@ class SignalEngine:
             elif is_roll_noise_dom:
                 strength = f"🛡️ CAPITAL SHIELD: ROLL NOISE FILTER (Noise {roll_noise_ratio*100:.0f}%)"
             else:
-                strength = f"🛡️ CAPITAL SHIELD: CONFLUENCE PASS ({confluence_count}/24)"
+                strength = f"🛡️ CAPITAL SHIELD: CONFLUENCE PASS ({confluence_count}/26)"
             kelly_unit = "0x (PASS)"
             crypto_is_omniscient = False
             crypto_is_apex = False
@@ -729,7 +797,7 @@ class SignalEngine:
             crypto_is_lethal = False
             is_zero_defect = False
 
-        trade_rationale = f"{strength} ({round(confidence)}%) | Confluence: {confluence_count}/24 | Δ: {strike_clearance_bps:+.1f} bps | Exp Margin: {expected_margin:+.2f}$"
+        trade_rationale = f"{strength} ({round(confidence)}%) | Confluence: {confluence_count}/26 | Δ: {strike_clearance_bps:+.1f} bps | Exp Margin: {expected_margin:+.2f}$"
 
         # Record prediction
         with self.lock:
@@ -780,10 +848,11 @@ class SignalEngine:
             predatory_data=predatory_data,
             math_models=math_models,
             whale_shield=whale_shield,
-            chambering_model=chambering_model
+            chambering_model=chambering_model,
+            ai_engine=ai_engine
         )
 
-    def _build_result(self, direction, confidence, strength, indicators, mtf, streak, order_flow, price, detail="", composite=0.0, trade_rationale="", regime="CHOP", kelly_unit="0x (PASS)", barrier_model=None, hurst_model=None, kyle_model=None, queue_model=None, currency_symbol="$", trade_setup=None, trader_note="", is_god_mode=False, is_god_apex=False, is_lethal=False, is_omniscient=False, is_zero_defect=False, zero_defect_mode=False, confluence_count=0, smc_sweep=None, fvg_data=None, predatory_data=None, math_models=None, whale_shield=None, chambering_model=None):
+    def _build_result(self, direction, confidence, strength, indicators, mtf, streak, order_flow, price, detail="", composite=0.0, trade_rationale="", regime="CHOP", kelly_unit="0x (PASS)", barrier_model=None, hurst_model=None, kyle_model=None, queue_model=None, currency_symbol="$", trade_setup=None, trader_note="", is_god_mode=False, is_god_apex=False, is_lethal=False, is_omniscient=False, is_zero_defect=False, zero_defect_mode=False, confluence_count=0, smc_sweep=None, fvg_data=None, predatory_data=None, math_models=None, whale_shield=None, chambering_model=None, ai_engine=None):
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         with self.lock:
             stats = self.get_accuracy_stats()
@@ -829,9 +898,10 @@ class SignalEngine:
             'zero_defect_mode': bool(zero_defect_mode),
             'predatory_data': predatory_data or {},
             'math_models': math_models or {},
-            'confluence_score': f"{confluence_count}/24 APEX" if is_god_apex else (f"{confluence_count}/24 CONFLUENCE" if confluence_count else "NEUTRAL"),
+            'ai_engine': ai_engine or {},
+            'confluence_score': f"{confluence_count}/26 APEX" if is_god_apex else (f"{confluence_count}/26 CONFLUENCE" if confluence_count else "NEUTRAL"),
             'confluence_count': int(confluence_count),
-            'confluence_total': 24,
+            'confluence_total': 26,
             'smc_sweep': smc_sweep or {},
             'fvg_data': fvg_data or {},
             'win_probability': round(barrier_model.get('win_prob', 50.0), 1) if barrier_model else 50.0,
