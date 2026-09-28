@@ -330,20 +330,6 @@ def add_header(response):
 def api_test_notification():
     return {"status": "ok"}
 
-@app.route("/download-apk", endpoint="download_apk_endpoint")
-@app.route("/tradex.apk", endpoint="tradex_apk_endpoint")
-def download_apk():
-    apk_candidates = [
-        os.path.join(os.path.dirname(__file__), "tradex.apk"),
-        os.path.join(os.path.dirname(__file__), "static", "tradex.apk"),
-        r"C:\Users\divya\Desktop\tradex.apk",
-        r"C:\Users\divya\Desktop\tradex\tradex.apk"
-    ]
-    for p in apk_candidates:
-        if os.path.exists(p):
-            return send_file(p, as_attachment=True, download_name="tradex.apk", mimetype="application/vnd.android.package-archive")
-    return "APK not found", 404
-
 @app.route("/api/sync_cwallet", methods=["POST", "OPTIONS"])
 def api_sync_cwallet():
     if request.method == "OPTIONS":
