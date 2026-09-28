@@ -12,3 +12,4 @@ cloudflared.exe
 scratch/
 .system_generated/
 .agents/
+gh_cli/
