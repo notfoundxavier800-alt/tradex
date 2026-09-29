@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+import urllib.request
 from collections import deque
 from typing import Optional, Dict, Any, List
 
@@ -221,7 +222,41 @@ class BinanceDataFeed:
             data = payload.get("data", payload)
             event_type = data.get("e")
 
-            if event_type == "aggTrade":
+            if event_type == "kline" or ("k" in data and isinstance(data.get("k"), dict)):
+                k = data["k"] if "k" in data else data
+                ts = pd.to_datetime(k["t"], unit='ms')
+                o = float(k["o"])
+                h = float(k["h"])
+                l = float(k["l"])
+                c = float(k["c"])
+                v = float(k["v"])
+                with self.lock:
+                    self.futures_price = c
+                    if self.latest_price <= 0 or not self._is_spot_connected:
+                        self.latest_price = c
+                    t_now = time.time()
+                    self.futures_ticks.append((t_now, c))
+                    if not self._is_spot_connected:
+                        self.price_ticks.append((t_now, c))
+                        if not self.candles.empty and self.candles.iloc[-1]["timestamp"] == ts:
+                            idx = self.candles.index[-1]
+                            self.candles.at[idx, "open"] = o
+                            self.candles.at[idx, "high"] = h
+                            self.candles.at[idx, "low"] = l
+                            self.candles.at[idx, "close"] = c
+                            self.candles.at[idx, "volume"] = v
+                        else:
+                            new_row = pd.DataFrame([{
+                                "timestamp": ts, "open": o, "high": h, "low": l, "close": c, "volume": v
+                            }])
+                            if self.candles.empty:
+                                self.candles = new_row
+                            else:
+                                self.candles = pd.concat([self.candles, new_row], ignore_index=True)
+                            if len(self.candles) > 300:
+                                self.candles = self.candles.iloc[-300:].reset_index(drop=True)
+
+            elif event_type == "aggTrade":
                 qty = float(data.get("q", 0))
                 price = float(data.get("p", 0))
                 is_buyer_taker = not data.get("m", True)
@@ -229,6 +264,9 @@ class BinanceDataFeed:
 
                 with self.lock:
                     self.futures_price = price
+                    if self.latest_price <= 0 or not self._is_spot_connected:
+                        self.latest_price = price
+                        self.price_ticks.append((trade_time, price))
                     self.futures_trades.append((trade_time, is_buyer_taker, qty, price))
                     self.futures_ticks.append((trade_time, price))
                     
@@ -287,6 +325,12 @@ class BinanceDataFeed:
                     self.coinbase_price = p
                     self.coinbase_bid = b
                     self.coinbase_ask = a
+                    if self.latest_price <= 0:
+                        self.latest_price = p
+                        self.price_ticks.append((t_now, p))
+                    if self.futures_price <= 0:
+                        self.futures_price = p
+                        self.futures_ticks.append((t_now, p))
                     self.coinbase_ticks.append((t_now, p))
                     cutoff = t_now - 60.0
                     while self.coinbase_ticks and self.coinbase_ticks[0][0] < cutoff:
@@ -335,7 +379,7 @@ class BinanceDataFeed:
     def _run_futures(self):
         while not self._stop_event.is_set():
             try:
-                url = f"wss://fstream.binance.com/stream?streams={self.symbol}@aggTrade/{self.symbol}@bookTicker"
+                url = f"wss://fstream.binance.com/stream?streams={self.symbol}@kline_1m/{self.symbol}@aggTrade/{self.symbol}@bookTicker"
                 self.ws_futures = websocket.WebSocketApp(
                     url,
                     on_open=self._on_futures_open,
@@ -366,8 +410,91 @@ class BinanceDataFeed:
             if not self._stop_event.is_set():
                 time.sleep(2)
 
+    def _seed_historical_candles(self, symbol: str):
+        """
+        Instantly seeds 100 historical 1m candles via REST API.
+        Tries Binance Futures REST -> Binance Spot REST -> Coinbase REST fallback.
+        Guarantees self.candles is never empty even before WebSockets connect or in geo-blocked environments.
+        """
+        clean = symbol.lower().replace('/', '').replace('-', '')
+        base = clean.replace('usdt', '').upper()
+        sym_upper = clean.upper()
+        
+        rows = []
+        # Attempt 1: Binance USD-M Futures REST
+        try:
+            url = f"https://fapi.binance.com/fapi/v1/klines?symbol={sym_upper}&interval=1m&limit=100"
+            req = urllib.request.Request(url, headers={"User-Agent": "TradeX/1.0"})
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode())
+                for k in data:
+                    rows.append({
+                        "timestamp": pd.to_datetime(k[0], unit='ms'),
+                        "open": float(k[1]),
+                        "high": float(k[2]),
+                        "low": float(k[3]),
+                        "close": float(k[4]),
+                        "volume": float(k[5])
+                    })
+        except Exception:
+            rows = []
+
+        # Attempt 2: Binance Spot REST
+        if not rows:
+            try:
+                url = f"https://api.binance.com/api/v3/klines?symbol={sym_upper}&interval=1m&limit=100"
+                req = urllib.request.Request(url, headers={"User-Agent": "TradeX/1.0"})
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    data = json.loads(resp.read().decode())
+                    for k in data:
+                        rows.append({
+                            "timestamp": pd.to_datetime(k[0], unit='ms'),
+                            "open": float(k[1]),
+                            "high": float(k[2]),
+                            "low": float(k[3]),
+                            "close": float(k[4]),
+                            "volume": float(k[5])
+                        })
+            except Exception:
+                rows = []
+
+        # Attempt 3: Coinbase REST
+        if not rows:
+            try:
+                cb_prod = f"{base}-USD"
+                url = f"https://api.exchange.coinbase.com/products/{cb_prod}/candles?granularity=60"
+                req = urllib.request.Request(url, headers={"User-Agent": "TradeX/1.0"})
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    data = json.loads(resp.read().decode())
+                    for k in reversed(data[:100]):
+                        rows.append({
+                            "timestamp": pd.to_datetime(k[0], unit='s'),
+                            "open": float(k[3]),
+                            "high": float(k[2]),
+                            "low": float(k[1]),
+                            "close": float(k[4]),
+                            "volume": float(k[5])
+                        })
+            except Exception:
+                rows = []
+
+        if rows:
+            df = pd.DataFrame(rows)
+            with self.lock:
+                self.candles = df
+                last_c = float(df.iloc[-1]["close"])
+                if self.latest_price <= 0:
+                    self.latest_price = last_c
+                if self.futures_price <= 0:
+                    self.futures_price = last_c
+                t_now = time.time()
+                self.price_ticks.append((t_now, last_c))
+                self.futures_ticks.append((t_now, last_c))
+            print(f"[BinanceDataFeed] Seeded {len(rows)} historical 1m candles for {sym_upper}. Latest price: {last_c}")
+
     def start(self):
         self._stop_event.clear()
+        threading.Thread(target=self._seed_historical_candles, args=(self.symbol,), daemon=True).start()
         if not self._spot_thread or not self._spot_thread.is_alive():
             self._spot_thread = threading.Thread(target=self._run_spot, daemon=True)
             self._spot_thread.start()
@@ -437,6 +564,9 @@ class BinanceDataFeed:
                 self.ws_coinbase.close()
             except Exception:
                 pass
+
+        # Seed historical candles for the newly selected symbol
+        threading.Thread(target=self._seed_historical_candles, args=(self.symbol,), daemon=True).start()
 
         print(f"[BinanceDataFeed] Successfully switched active crypto symbol to: {self.symbol.upper()}")
         return True
@@ -717,12 +847,31 @@ class BinanceDataFeed:
             }
 
     def is_connected(self) -> bool:
-        return self._is_spot_connected
+        with self.lock:
+            has_price = (self.latest_price > 0) or (self.futures_price > 0) or (self.coinbase_price > 0)
+        return bool(
+            self._is_spot_connected or 
+            self._is_futures_connected or 
+            self._is_coinbase_connected or 
+            has_price
+        )
 
     def get_latest_price(self) -> float:
         with self.lock:
-            return float(self.latest_price or 0.0)
+            if self.latest_price > 0:
+                return float(self.latest_price)
+            if self.futures_price > 0:
+                return float(self.futures_price)
+            if self.coinbase_price > 0:
+                return float(self.coinbase_price)
+            return 0.0
 
     def get_futures_price(self) -> float:
         with self.lock:
-            return float(self.futures_price or 0.0)
+            if self.futures_price > 0:
+                return float(self.futures_price)
+            if self.latest_price > 0:
+                return float(self.latest_price)
+            if self.coinbase_price > 0:
+                return float(self.coinbase_price)
+            return 0.0

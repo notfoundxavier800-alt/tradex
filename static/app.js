@@ -200,6 +200,25 @@ function setSignalCircleDisplay(tier, mainText, circleClass) {
         txt.textContent = mainText;
     }
 }
+
+function updatePriceDisplay(currentPrice, dir = 'neutral') {
+    if (!currentPrice || isNaN(currentPrice)) return;
+    const p = parseFloat(currentPrice);
+    if (priceDisplay) {
+        priceDisplay.textContent = formatCurrency(p, p < 5 ? 4 : 2);
+        if (lastPrice !== null) {
+            priceDisplay.className = 'price';
+            void priceDisplay.offsetWidth;
+            if (dir === 'up' || p > lastPrice) priceDisplay.classList.add('flash-up');
+            else if (dir === 'down' || p < lastPrice) priceDisplay.classList.add('flash-down');
+            setTimeout(() => (priceDisplay.className = 'price'), 300);
+        }
+    }
+    lastPrice = p;
+    if (activeMarketType === 'crypto' && cwalletRoundOpenPrice) {
+        syncChartWithCwalletStrike(cwalletRoundOpenPrice);
+    }
+}
 const confidenceText = document.getElementById('confidence-text');
 const strengthText = document.getElementById('strength-text');
 const actionHint = document.getElementById('action-hint');
@@ -1359,7 +1378,7 @@ function dispatchCwalletRoundCall(serverCall = null, isFallback = false) {
     const isBeast = true;
     const isZeroDefect = isZdCall;
     const kelly = isZdCall ? '5x MAXIMUM INFALLIBLE UNIT' : ((serverCall && serverCall.kelly_unit && !serverCall.kelly_unit.includes('PASS')) ? serverCall.kelly_unit : ((latestSignalData && latestSignalData.kelly_unit && !latestSignalData.kelly_unit.includes('PASS')) ? latestSignalData.kelly_unit : '5x MAX GOD-LETHAL UNIT'));
-    const cwalletSecsToLock = Math.max(0, roundSecondsLeft - CWALLET_LOCK_BUFFER);
+    const cwalletSecsToLock = Math.max(0, Math.ceil(roundSecondsLeft - CWALLET_LOCK_BUFFER));
 
     const soundTier = isZeroDefect ? 'OMNISCIENT' : (isOmniscient ? 'OMNISCIENT' : (isLethal ? 'LETHAL' : (isGodApex ? 'GOD_APEX' : (isGodMode ? 'GOD' : 'NORMAL'))));
     const deltaSign = strikeDelta >= 0 ? '+' : '';
@@ -2634,26 +2653,13 @@ socket.on('market_switched', (data) => {
 
 // Price Updates
 socket.on('price_update', (data) => {
+    if (!data) return;
     const currentPrice = data.price;
     if (data.currency_symbol) {
         activeCurrencySymbol = data.currency_symbol;
     }
     if (currentPrice) {
-        if (priceDisplay) {
-            priceDisplay.textContent = formatCurrency(currentPrice, currentPrice < 5 ? 4 : 2);
-
-            if (lastPrice !== null) {
-                priceDisplay.className = 'price';
-                void priceDisplay.offsetWidth;
-                if (currentPrice > lastPrice) priceDisplay.classList.add('flash-up');
-                else if (currentPrice < lastPrice) priceDisplay.classList.add('flash-down');
-                setTimeout(() => (priceDisplay.className = 'price'), 300);
-            }
-        }
-        lastPrice = currentPrice;
-        if (activeMarketType === 'crypto' && cwalletRoundOpenPrice) {
-            syncChartWithCwalletStrike(cwalletRoundOpenPrice);
-        }
+        updatePriceDisplay(currentPrice, data.direction || 'neutral');
     }
 });
 
@@ -3735,16 +3741,25 @@ function fetchInitialState() {
             }
 
             if (data.price) {
-                if (!socket || !socket.connected) {
-                    lastPrice = data.price;
-                    updatePriceDisplay(data.price, 'neutral');
-                }
+                updatePriceDisplay(data.price, 'neutral');
                 if (cwalletRoundOpenPrice === null) {
                     cwalletRoundOpenPrice = data.price;
                     if (cwalletOpenPriceDisplay) {
                         cwalletOpenPriceDisplay.textContent = formatCurrency(data.price);
                     }
                 }
+            }
+
+            // Hydrate chart immediately if candles are returned via HTTP
+            if (Array.isArray(data.candles) && data.candles.length > 0 && candleSeries && areaSeries) {
+                try {
+                    if (!hasHistorySet) {
+                        candleSeries.setData(data.candles);
+                        areaSeries.setData(data.candles.map(c => ({ time: c.time, value: c.close })));
+                        if (chart) chart.timeScale().fitContent();
+                        hasHistorySet = true;
+                    }
+                } catch (e) {}
             }
 
             // Do not overwrite live WebSocket countdown clocks with lagging HTTP poll responses
@@ -3983,12 +3998,13 @@ function updateCwalletAreaHero() {
                     ? `🛡️ ROUND #${roundNumber} ZERO-DEFECT SHIELD (0% RISK FORTRESS):`
                     : `🛡️ ROUND #${roundNumber} CAPITAL SHIELDED (PRESERVE BANKROLL):`;
             }
+            const nextSecs = Math.max(0, Math.ceil(roundSecondsLeft));
             if (actionSub) {
                 actionSub.innerHTML = currentRoundBet.strength
-                    ? `<strong style="color: #34d399; font-size: 14px;">${currentRoundBet.strength}</strong><br><span style="color: #94a3b8; font-size: 11px;">100% Zero-Defect fortress preserves bankroll until an infallible runaway fires. Next round in ${roundSecondsLeft}s.</span>`
+                    ? `<strong style="color: #34d399; font-size: 14px;">${currentRoundBet.strength}</strong><br><span style="color: #94a3b8; font-size: 11px;">100% Zero-Defect fortress preserves bankroll until an infallible runaway fires. Next round in ${nextSecs}s.</span>`
                     : (isZdCall
-                        ? `<strong style="color: #34d399; font-size: 14px;">🛡️ 100% ZERO-DEFECT CAPITAL SHIELD: DO NOT BET!</strong><br><span style="color: #94a3b8; font-size: 11px;">Sub-4σ chop (Δ $${delta.toFixed(2)}). 100% Zero-Defect fortress preserves bankroll until an infallible runaway fires. Next round in ${roundSecondsLeft}s.</span>`
-                        : `<strong style="color: #fbbf24; font-size: 14px;">🚫 DO NOT BET THIS ROUND!</strong><br><span style="color: #94a3b8; font-size: 11px;">Price is fluctuating in chop/noise near strike ($${openStrike.toFixed(2)}). Capital preserved. Next round setup in ${roundSecondsLeft}s.</span>`);
+                        ? `<strong style="color: #34d399; font-size: 14px;">🛡️ 100% ZERO-DEFECT CAPITAL SHIELD: DO NOT BET!</strong><br><span style="color: #94a3b8; font-size: 11px;">Sub-4σ chop (Δ $${delta.toFixed(2)}). 100% Zero-Defect fortress preserves bankroll until an infallible runaway fires. Next round in ${nextSecs}s.</span>`
+                        : `<strong style="color: #fbbf24; font-size: 14px;">🚫 DO NOT BET THIS ROUND!</strong><br><span style="color: #94a3b8; font-size: 11px;">Price is fluctuating in chop/noise near strike ($${openStrike.toFixed(2)}). Capital preserved. Next round setup in ${nextSecs}s.</span>`);
             }
             return;
         }

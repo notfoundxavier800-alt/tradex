@@ -63,6 +63,51 @@ def add_cors_headers(response):
 def index():
     return render_template("dashboard.html")
 
+@socketio.on("connect")
+def handle_connect():
+    try:
+        spot_p = crypto_feed.get_latest_price() if crypto_feed else 0.0
+        fut_p = crypto_feed.get_futures_price() if crypto_feed else 0.0
+        cur_p = fut_p if crypto_price_source == "futures" and fut_p > 0 else (spot_p or fut_p)
+        if active_market_type != "crypto":
+            feed = indian_feed if active_market_type == "indian" else international_feed
+            cur_p = feed.get_latest_price() if feed else 0.0
+        else:
+            feed = crypto_feed
+
+        candles = feed.get_candles() if feed else None
+        candle_list = []
+        if candles is not None and not candles.empty:
+            for _, row in candles.iterrows():
+                try:
+                    t = int(row["timestamp"].timestamp()) if hasattr(row["timestamp"], "timestamp") else int(time.time())
+                    candle_list.append({
+                        "time": t,
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                    })
+                except Exception:
+                    continue
+
+        if candle_list:
+            socketio.emit("candle_history", candle_list, to=request.sid)
+
+        if cur_p > 0:
+            socketio.emit("price_update", {
+                "price": cur_p,
+                "direction": "neutral",
+                "currency_symbol": active_currency_symbol,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }, to=request.sid)
+
+        if active_market_type == "crypto" and round_manager:
+            r_state = round_manager.get_state(cur_p)
+            socketio.emit("cwallet_round_update", r_state, to=request.sid)
+    except Exception as e:
+        print(f"[Socket connect error] {e}")
+
 @app.route("/download/apk")
 @app.route("/apk")
 @app.route("/download-apk")
@@ -298,13 +343,29 @@ def api_live():
             else:
                 cur_p = spot_p if spot_p > 0 else fut_p
 
+        candle_list = []
+        if candles is not None and not candles.empty:
+            for _, row in candles.iterrows():
+                try:
+                    t = int(row["timestamp"].timestamp()) if hasattr(row["timestamp"], "timestamp") else int(time.time())
+                    candle_list.append({
+                        "time": t,
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                    })
+                except Exception:
+                    continue
+
         return {
             "market_type": active_market_type,
             "symbol": active_symbol,
             "name": active_name,
             "currency_symbol": active_currency_symbol,
             "connected": feed.is_connected() if feed else False,
-            "candles": len(candles) if candles is not None else 0,
+            "candles": candle_list,
+            "candle_count": len(candle_list),
             "price": cur_p if active_market_type == "crypto" else (feed.get_latest_price() if feed else 0),
             "spot_price": spot_p,
             "futures_price": fut_p,
@@ -831,7 +892,7 @@ def _signal_loop(interval: float = 1.0):
 
             else:
                 # --- CRYPTO (CWALLET) MODE ---
-                if crypto_feed and crypto_feed.is_connected():
+                if crypto_feed and (crypto_feed.is_connected() or crypto_feed.get_latest_price() > 0 or crypto_feed.get_futures_price() > 0):
                     spot_p = crypto_feed.get_latest_price() or 0.0
                     fut_p = crypto_feed.get_futures_price() or 0.0
 
@@ -881,7 +942,34 @@ def _signal_loop(interval: float = 1.0):
                         }
                         socketio.emit("cwallet_round_settled", settled_payload)
 
+                    # Price update - always emits whenever current_price > 0
+                    if current_price > 0:
+                        p_dir = "neutral"
+                        prev_p = last_price_by_sym.get(sym_key)
+                        if prev_p is not None:
+                            if current_price > prev_p: p_dir = "up"
+                            elif current_price < prev_p: p_dir = "down"
+                        last_price_by_sym[sym_key] = current_price
+                        socketio.emit("price_update", {
+                            "price": current_price,
+                            "direction": p_dir,
+                            "currency_symbol": "$",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+
                     candles = crypto_feed.get_candles()
+                    # Candle update - emits whenever candles are available
+                    if candles is not None and len(candles) > 0:
+                        lc = candles.iloc[-1]
+                        t = int(lc["timestamp"].timestamp()) if hasattr(lc["timestamp"], "timestamp") else int(time.time())
+                        socketio.emit("candle_update", {
+                            "time": t,
+                            "open": float(lc["open"]),
+                            "high": float(lc["high"]),
+                            "low": float(lc["low"]),
+                            "close": float(current_price if current_price > 0 else lc["close"]),
+                        })
+
                     if candles is not None and len(candles) >= 8:
                         if current_price > 0 and not candles.empty:
                             candles = candles.copy()
@@ -1090,33 +1178,6 @@ def _signal_loop(interval: float = 1.0):
                                     strength=call_strength,
                                     round_id=round_id
                                 )
-
-                        # Price update
-                        if current_price:
-                            p_dir = "neutral"
-                            prev_p = last_price_by_sym.get(sym_key)
-                            if prev_p is not None:
-                                if current_price > prev_p: p_dir = "up"
-                                elif current_price < prev_p: p_dir = "down"
-                            last_price_by_sym[sym_key] = current_price
-                            socketio.emit("price_update", {
-                                "price": current_price,
-                                "direction": p_dir,
-                                "currency_symbol": "$",
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            })
-
-                        # Candle update
-                        if len(candles) > 0:
-                            lc = candles.iloc[-1]
-                            t = int(lc["timestamp"].timestamp()) if hasattr(lc["timestamp"], "timestamp") else int(time.time())
-                            socketio.emit("candle_update", {
-                                "time": t,
-                                "open": float(lc["open"]),
-                                "high": float(lc["high"]),
-                                "low": float(lc["low"]),
-                                "close": float(lc["close"]),
-                            })
 
         except Exception as e:
             print(f"[Signal Loop Error] {e}")
