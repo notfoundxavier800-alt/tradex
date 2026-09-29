@@ -219,6 +219,19 @@ function updatePriceDisplay(currentPrice, dir = 'neutral') {
         syncChartWithCwalletStrike(cwalletRoundOpenPrice);
     }
 }
+
+function renderPerformanceStats(stats) {
+    if (!stats) return;
+    const statWinRate = document.getElementById('stat-win-rate');
+    const statRecord = document.getElementById('stat-record');
+    const total = (settledWins + settledLosses) > 0 ? (settledWins + settledLosses) : (stats.total || 0);
+    const wins = (settledWins + settledLosses) > 0 ? settledWins : (stats.wins || 0);
+    const losses = (settledWins + settledLosses) > 0 ? settledLosses : (stats.losses || 0);
+    const wr = total > 0 ? ((wins / total) * 100).toFixed(1) : (stats.win_rate !== undefined ? Number(stats.win_rate).toFixed(1) : '0.0');
+
+    if (statWinRate) statWinRate.textContent = `${wr}%`;
+    if (statRecord) statRecord.textContent = `${wins}W / ${losses}L`;
+}
 const confidenceText = document.getElementById('confidence-text');
 const strengthText = document.getElementById('strength-text');
 const actionHint = document.getElementById('action-hint');

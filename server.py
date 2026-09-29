@@ -33,8 +33,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 crypto_feed: BinanceDataFeed | None = None
 indian_feed: IndianMarketFeed | None = None
 international_feed: InternationalMarketFeed | None = None
-analyzer: TechnicalAnalyzer | None = None
-signal_engine: SignalEngine | None = None
+analyzer: TechnicalAnalyzer = TechnicalAnalyzer()
+signal_engine: SignalEngine = SignalEngine(analyzer)
 round_manager: RoundManager = RoundManager(round_duration=20, lead_time=5.0)
 _running = False
 
@@ -225,6 +225,7 @@ def api_search_symbol():
 
 @app.route("/api/switch_symbol", methods=["POST"])
 def api_switch_symbol():
+    global crypto_feed, indian_feed, international_feed
     global active_market_type, active_symbol, active_name, active_currency_symbol
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -236,7 +237,8 @@ def api_switch_symbol():
 
         if m_type == "indian":
             if not indian_feed:
-                return {"error": "Indian market feed not initialized"}, 500
+                indian_feed = IndianMarketFeed(initial_symbol="^NSEI")
+                indian_feed.start()
             success = indian_feed.switch_symbol(sym)
             if not success:
                 return {"error": f"Could not find Indian stock '{sym}'"}, 404
@@ -249,7 +251,8 @@ def api_switch_symbol():
             candles = indian_feed.get_candles()
         elif m_type == "international":
             if not international_feed:
-                return {"error": "International market feed not initialized"}, 500
+                international_feed = InternationalMarketFeed(initial_symbol="^GSPC")
+                international_feed.start()
             success = international_feed.switch_symbol(sym)
             if not success:
                 return {"error": f"Could not find International market '{sym}'"}, 404
@@ -262,7 +265,8 @@ def api_switch_symbol():
             candles = international_feed.get_candles()
         else:
             if not crypto_feed:
-                return {"error": "Crypto feed not initialized"}, 500
+                crypto_feed = BinanceDataFeed(symbol="btcusdt")
+                crypto_feed.start()
             clean_sym = sym.lower().replace("/", "").replace("-", "")
             if not clean_sym.endswith("usdt"):
                 clean_sym = f"{clean_sym}usdt"
@@ -1210,20 +1214,25 @@ def start_bot(host: str = "127.0.0.1", port: int = 5000, interval: float = 0.5):
     print("=" * 65)
 
     print("\n[Boot] 1. Starting Binance Multi-Crypto data feed...")
-    crypto_feed = BinanceDataFeed(symbol="btcusdt")
-    crypto_feed.start()
+    if not crypto_feed:
+        crypto_feed = BinanceDataFeed(symbol="btcusdt")
+        crypto_feed.start()
 
     print("[Boot] 2. Starting Indian Stock Market feed (NSE/BSE)...")
-    indian_feed = IndianMarketFeed(initial_symbol="^NSEI")
-    indian_feed.start()
+    if not indian_feed:
+        indian_feed = IndianMarketFeed(initial_symbol="^NSEI")
+        indian_feed.start()
 
     print("[Boot] 3. Starting International Market feed (US/Forex/Global)...")
-    international_feed = InternationalMarketFeed(initial_symbol="^GSPC")
-    international_feed.start()
+    if not international_feed:
+        international_feed = InternationalMarketFeed(initial_symbol="^GSPC")
+        international_feed.start()
 
     print("[Boot] 4. Initialising Institutional Quantitative Analyzer...")
-    analyzer = TechnicalAnalyzer()
-    signal_engine = SignalEngine(analyzer)
+    if not analyzer:
+        analyzer = TechnicalAnalyzer()
+    if not signal_engine:
+        signal_engine = SignalEngine(analyzer)
 
     print(f"[Boot] 4. Starting precision signal loop (every {interval}s)...")
     signal_thread = threading.Thread(target=_signal_loop, args=(interval,), daemon=True)
@@ -1247,3 +1256,5 @@ def stop_bot():
     _running = False
     if crypto_feed: crypto_feed.stop()
     if indian_feed: indian_feed.stop()
+    if international_feed: international_feed.stop()
+    print("[Shutdown] Bot stopped cleanly.")
