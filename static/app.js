@@ -543,16 +543,31 @@ if (btnDoneModal && modalBookmarklet) {
 
 if (btnCopyBookmarklet && bookmarkletCode) {
     btnCopyBookmarklet.addEventListener('click', () => {
-        bookmarkletCode.select();
-        navigator.clipboard.writeText(bookmarkletCode.value).then(() => {
-            btnCopyBookmarklet.textContent = '✅ Copied to Clipboard!';
-            setTimeout(() => {
-                btnCopyBookmarklet.textContent = '📋 Copy Auto-Sync Code';
-            }, 2500);
-        }).catch(() => {
-            document.execCommand('copy');
-            btnCopyBookmarklet.textContent = '✅ Copied!';
-        });
+        try {
+            bookmarkletCode.select();
+        } catch (e) {}
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            navigator.clipboard.writeText(bookmarkletCode.value).then(() => {
+                btnCopyBookmarklet.textContent = '✅ Copied to Clipboard!';
+                setTimeout(() => {
+                    btnCopyBookmarklet.textContent = '📋 Copy Auto-Sync Code';
+                }, 2500);
+            }).catch(() => {
+                try {
+                    document.execCommand('copy');
+                    btnCopyBookmarklet.textContent = '✅ Copied!';
+                } catch (err) {
+                    btnCopyBookmarklet.textContent = '📋 Press Ctrl+C to Copy';
+                }
+            });
+        } else {
+            try {
+                document.execCommand('copy');
+                btnCopyBookmarklet.textContent = '✅ Copied!';
+            } catch (err) {
+                btnCopyBookmarklet.textContent = '📋 Press Ctrl+C to Copy';
+            }
+        }
     });
 }
 
@@ -1462,9 +1477,21 @@ function recordRoundHistory(rnd, call, conf, price, result) {
 
     const historyTableBody = document.getElementById('history-table-body');
     if (historyTableBody) {
-        historyTableBody.insertBefore(row, historyTableBody.firstChild);
-        while (historyTableBody.children.length > 20) {
-            historyTableBody.removeChild(historyTableBody.lastChild);
+        try {
+            if (typeof historyTableBody.insertBefore === 'function' && historyTableBody.firstChild) {
+                historyTableBody.insertBefore(row, historyTableBody.firstChild);
+            } else if (typeof historyTableBody.prepend === 'function') {
+                historyTableBody.prepend(row);
+            } else if (typeof historyTableBody.appendChild === 'function') {
+                historyTableBody.appendChild(row);
+            }
+        } catch (e) {
+            try { historyTableBody.appendChild(row); } catch (err) {}
+        }
+        if (historyTableBody.children) {
+            while (historyTableBody.children.length > 20) {
+                historyTableBody.removeChild(historyTableBody.lastChild);
+            }
         }
     }
 }
@@ -1978,8 +2005,8 @@ function showBrowserNotification(title, body) {
     // 2. Guaranteed In-App Floating Heads-Up Toast (Visible on all screens)
     showInAppToastNotification(title, body, dir);
 
-    // 3. HTML5 Web Notifications API (PC Chrome / Edge / Firefox)
-    if ('Notification' in window) {
+    // 3. HTML5 Web Notifications API (PC Chrome / Edge / Firefox / Android ServiceWorker)
+    if ('Notification' in window && typeof Notification === 'function') {
         if (Notification.permission === 'granted') {
             try {
                 const notif = new Notification(title, {
@@ -1995,7 +2022,16 @@ function showBrowserNotification(title, body) {
                     this.close();
                 };
             } catch (e) {
-                console.error('Notification error:', e);
+                // Mobile Chrome on Android throws 'Illegal constructor' and requires ServiceWorker registration
+                if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+                    navigator.serviceWorker.ready.then(reg => {
+                        reg.showNotification(title, {
+                            body: body,
+                            tag: 'tradex-signal-' + (roundNumber || Date.now()),
+                            icon: '/static/icon-192.png'
+                        });
+                    }).catch(() => {});
+                }
             }
         } else if (Notification.permission === 'default') {
             try {
@@ -2004,7 +2040,13 @@ function showBrowserNotification(title, body) {
                     if (perm === 'granted') {
                         try {
                             new Notification(title, { body: body, tag: 'tradex-signal-' + (roundNumber || Date.now()), requireInteraction: true });
-                        } catch (e) {}
+                        } catch (e) {
+                            if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+                                navigator.serviceWorker.ready.then(reg => {
+                                    reg.showNotification(title, { body: body, tag: 'tradex-signal-' + (roundNumber || Date.now()), icon: '/static/icon-192.png' });
+                                }).catch(() => {});
+                            }
+                        }
                     }
                 });
             } catch (e) {}
@@ -2275,7 +2317,15 @@ if (btnCw) {
         if (candleSeries) candleSeries.applyOptions({ visible: false });
         if (areaSeries) areaSeries.applyOptions({ visible: true });
         syncChartWithCwalletStrike();
-        if (chart) chart.timeScale().scrollToRealTime();
+        if (chart && chart.timeScale) {
+            try {
+                if (typeof chart.timeScale().scrollToRealTime === 'function') {
+                    chart.timeScale().scrollToRealTime();
+                } else if (typeof chart.timeScale().scrollToPosition === 'function') {
+                    chart.timeScale().scrollToPosition(0, false);
+                }
+            } catch (e) {}
+        }
     });
 }
 
@@ -2333,7 +2383,7 @@ function syncChartWithCwalletStrike(targetStrike = null, favoredDir = null) {
         price: strike,
         color: lineColor,
         lineWidth: 2,
-        lineStyle: LightweightCharts.LineStyle.Dashed,
+        lineStyle: (typeof LightweightCharts !== 'undefined' && LightweightCharts.LineStyle && LightweightCharts.LineStyle.Dashed !== undefined) ? LightweightCharts.LineStyle.Dashed : 2,
         axisLabelVisible: true,
         title: titleText
     };

@@ -309,7 +309,7 @@
                 <button id="btn-voice-toggle" class="btn-action btn-voice">🎙️ Voice: ON</button>
                 <button id="btn-countdown-toggle" class="btn-action btn-beeps">🔊 Beeps: ON</button>
                 <button id="btn-allow-notif" class="btn-action btn-allow">📢 Alerts</button>
-                <a href="/download-apk" class="btn-action" style="background: linear-gradient(135deg, #10b981, #059669); color: white; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; font-weight: 700; border-radius: 6px; padding: 4px 10px;" title="Download signed native Android APK directly to your phone or computer">📱 Download APK</a>
+                <a href="/download-apk" download="tradex.apk" id="btn-download-apk" class="btn-action" style="background: linear-gradient(135deg, #10b981, #059669); color: white; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; font-weight: 700; border-radius: 6px; padding: 4px 10px;" title="Download signed native Android APK directly to your phone or computer">📱 Download APK</a>
                 <div class="status">
                     <span id="connection-status-dot" class="dot connected"></span>
                     <span id="connection-status-text">Connected</span>
@@ -348,6 +348,29 @@
                     <button id="btn-search-go" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8; font-weight: 800;">GO</button>
                     <div class="search-dropdown" id="search-dropdown" style="display: none;"></div>
                 </div>
+                <div class="market-pills-row" id="market-pills-crypto">
+                    <span class="pills-label">TOP CRYPTO:</span>
+                    <button class="pill-asset active" data-symbol="btcusdt" data-type="crypto">BTC/USDT</button>
+                    <button class="pill-asset" data-symbol="ethusdt" data-type="crypto">ETH/USDT</button>
+                    <button class="pill-asset" data-symbol="solusdt" data-type="crypto">SOL/USDT</button>
+                    <button class="pill-asset" data-symbol="dogeusdt" data-type="crypto">DOGE/USDT</button>
+                    <button class="pill-asset" data-symbol="pepeusdt" data-type="crypto">PEPE/USDT</button>
+                </div>
+                <div class="market-pills-row" id="market-pills-indian" style="display: none;">
+                    <span class="pills-label">NSE/BSE STOCKS:</span>
+                    <button class="pill-asset pill-indian" data-symbol="^NSEI" data-type="indian">NIFTY 50</button>
+                    <button class="pill-asset pill-indian" data-symbol="^NSEBANK" data-type="indian">BANK NIFTY</button>
+                    <button class="pill-asset pill-indian" data-symbol="RELIANCE.NS" data-type="indian">RELIANCE</button>
+                    <button class="pill-asset pill-indian" data-symbol="TCS.NS" data-type="indian">TCS</button>
+                    <button class="pill-asset pill-indian" data-symbol="HDFCBANK.NS" data-type="indian">HDFC BANK</button>
+                </div>
+                <div class="market-pills-row" id="market-pills-international" style="display: none;">
+                    <span class="pills-label">GLOBAL MARKETS:</span>
+                    <button class="pill-asset" data-symbol="^GSPC" data-type="international">S&amp;P 500</button>
+                    <button class="pill-asset" data-symbol="^IXIC" data-type="international">NASDAQ</button>
+                    <button class="pill-asset" data-symbol="EURUSD=X" data-type="international">EUR/USD</button>
+                    <button class="pill-asset" data-symbol="GC=F" data-type="international">GOLD</button>
+                </div>
             </div>
         </div>
 
@@ -374,7 +397,8 @@
             </div>
             <div class="notif-banner-right" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                 <button id="btn-enable-notif-banner" class="btn-action" style="background: linear-gradient(135deg, #10b981, #059669); color: #fff; font-weight: 800; padding: 7px 16px; border: none; border-radius: 6px; cursor: pointer; box-shadow: 0 0 12px rgba(16,185,129,0.4);">🔔 Enable Instant Alerts</button>
-                <button id="btn-test-notif-banner" class="btn-action" style="background: #1e293b; color: #38bdf8; font-weight: 700; padding: 7px 14px; border: 1px solid #38bdf8; border-radius: 6px; cursor: pointer;">⚡ Test Alert</button>
+                <button id="btn-test-notif-banner" data-alias="btn-test-notif" class="btn-action" style="background: #1e293b; color: #38bdf8; font-weight: 700; padding: 7px 14px; border: 1px solid #38bdf8; border-radius: 6px; cursor: pointer;">⚡ Test Alert</button>
+                <button id="btn-test-notif" style="display: none;"></button>
             </div>
         </div>
 
@@ -423,6 +447,15 @@
                         <button id="btn-lead-5" class="btn-pill active" style="border-color: #00e676; color: #00e676; font-weight: 800; box-shadow: 0 0 10px rgba(0,230,118,0.4);" title="Fires at EXACTLY T-5s on Cwallet betting timer">🎯 Exactly 5s Ultra Sniper (Recommended)</button>
                         <button id="btn-lead-8" class="btn-pill" style="border-color: #38bdf8; color: #38bdf8;" title="Fires at 8s remaining">8s Deep Sniper</button>
                         <button id="btn-lead-10" class="btn-pill" title="Fires at 10s remaining">10s Precision</button>
+                        <button id="btn-lead-6" style="display:none;"></button>
+                        <button id="btn-lead-12" style="display:none;"></button>
+                        <button id="btn-lead-15" style="display:none;"></button>
+                        <button id="btn-lead-18" style="display:none;"></button>
+                        <button id="btn-lead-20" style="display:none;"></button>
+                        <button id="btn-lead-24" style="display:none;"></button>
+                        <button id="btn-lead-26" style="display:none;"></button>
+                        <button id="btn-sync-20" style="display:none;"></button>
+                        <button id="btn-sync-8" style="display:none;"></button>
                     </div>
                     <div class="btn-group sync-group-row">
                         <span class="control-label">⚡ 1-Click Sync Cwallet:</span>
@@ -547,6 +580,7 @@
                     <span class="round-number-tag" id="intl-market-tag">US / GLOBAL</span>
                     <span class="round-phase-badge phase-open" id="intl-phase-badge">🟢 US / GLOBAL SESSION</span>
                     <span class="round-lock-countdown" id="intl-hours-badge">🕒 09:30 - 16:00 EST / 24/5 FX</span>
+                    <span id="intl-est-clock-big" style="margin-left: auto; font-family: monospace; font-size: 0.82rem; color: #38bdf8; font-weight: 800;">--:--:-- EST</span>
                 </div>
                 <div class="round-desc" id="intl-instruction">
                     International Intelligence: Scanning VWAP, Volume Profile POC, Floor Pivots, and RSI Divergences.
@@ -561,6 +595,7 @@
                     <span class="round-number-tag" id="indian-market-tag">NSE / BSE</span>
                     <span class="round-phase-badge phase-open" id="indian-phase-badge">🟢 REGULAR TRADING SESSION</span>
                     <span class="round-lock-countdown" id="indian-hours-badge">🕒 09:15 - 15:30 IST</span>
+                    <span id="indian-ist-clock-big" style="margin-left: auto; font-family: monospace; font-size: 0.82rem; color: #fb923c; font-weight: 800;">--:--:-- IST</span>
                 </div>
                 <div class="round-desc" id="indian-instruction">
                     Indian Market Intraday: Scanning VWAP breakouts, Floor Pivots, Supertrend, and Volume Surges.
@@ -828,6 +863,9 @@
                     <strong>INSTITUTIONAL CVD TAKER DELTA</strong>
                     <span class="sub-badge" id="delta-burst">Burst: 0.00 BTC</span>
                     <span class="sub-badge" id="tick-intensity-badge" style="background: rgba(148, 163, 184, 0.15); color: #cbd5e1;">-- t/s</span>
+                    <span class="sub-badge" id="stat-tick-rate" style="display: none;"></span>
+                    <span class="sub-badge" id="hurst-exponent-badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-family: monospace; font-weight: 700;">H=0.50</span>
+                    <span class="sub-badge" id="kyle-lambda-badge" style="background: rgba(192, 132, 252, 0.15); color: #c084fc; font-family: monospace; font-weight: 700;">λ=0.0</span>
                 </div>
                 <div class="of-volumes">
                     <span class="vol-buy" id="of-buy-vol">Bulls: 0.00 BTC</span>
@@ -928,6 +966,7 @@
                 <span class="stat-label">Cwallet Open Strike</span>
                 <div class="strike-inline-row">
                     <span class="stat-val highlight-accent" id="cwallet-open-price">$--</span>
+                    <span class="stat-sub" id="cwallet-round-delta" style="font-size: 0.75rem; font-weight: 700; margin-left: 4px; color: #94a3b8;">(Δ$0.00)</span>
                     <button id="btn-lock-strike" class="btn-micro" title="Re-anchor current live price as strike">🔒 Lock</button>
                     <input type="number" id="sync-input-strike" step="0.01" placeholder="Type $" title="Type Cwallet Strike" style="width: 58px; background: #1e293b; color: #38bdf8; border: 1px solid #475569; border-radius: 4px; padding: 2px 4px; font-size: 11px; text-align: center;">
                     <button id="btn-set-strike" class="btn-micro" style="border-color: #38bdf8; color: #38bdf8;" title="Set Cwallet Strike">Set</button>
@@ -956,6 +995,139 @@
                             </div>
                         </div>
                     </div>
+                    <div class="radar-metrics-col">
+                        <div class="radar-metric-item">
+                            <span class="radar-metric-label">Strike Barrier K</span>
+                            <span class="radar-metric-val" id="radar-strike-val">$--</span>
+                        </div>
+                        <div class="radar-metric-item">
+                            <span class="radar-metric-label">Barrier Clearance</span>
+                            <span class="radar-metric-val" id="radar-clearance-val">+$0.00 (0.0 bps)</span>
+                        </div>
+                        <div class="radar-metric-item">
+                            <span class="radar-metric-label">Price Velocity (Drift)</span>
+                            <span class="radar-metric-val" id="radar-drift-val">$0.00/s</span>
+                        </div>
+                        <div class="radar-metric-item">
+                            <span class="radar-metric-label">Tick Intensity (Flow)</span>
+                            <span class="radar-metric-val" id="radar-vol-val">0.0 trades/s</span>
+                        </div>
+                        <div class="radar-metric-item">
+                            <span class="radar-metric-label">Barrier Vol Cone (1σ)</span>
+                            <span class="radar-metric-val" id="radar-vol-cone-val">±$0.00</span>
+                        </div>
+                        <div class="radar-metric-item">
+                            <span class="radar-metric-label">Fractal Persistence H</span>
+                            <span class="radar-metric-val" id="radar-hurst-val">H=0.50 (RANDOM)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live L2 Order Book Depth Ladder -->
+            <div class="card depth-ladder-panel">
+                <div class="panel-header">
+                    <div class="panel-title-with-icon">
+                        <span class="panel-icon">📊</span>
+                        <h2>LIVE ORDER BOOK DEPTH (L2 MICROSTRUCTURE)</h2>
+                    </div>
+                    <div class="depth-badges-group">
+                        <span class="sub-badge" id="depth-skew-pill">Depth: 50% Bids / 50% Asks</span>
+                        <span class="sub-badge" id="depth-depletion-pill">Queue: Balanced</span>
+                    </div>
+                </div>
+                <div class="depth-ladder-container">
+                    <div class="depth-table-side bids-side">
+                        <div class="depth-side-header">BIDS (BUY ORDERS)</div>
+                        <div class="depth-rows-list" id="depth-bids-list">
+                            <div class="depth-row"><span class="d-price" style="color: #00e676;">$--</span><span class="d-qty">-- BTC</span></div>
+                        </div>
+                    </div>
+                    <div class="depth-spread-center">
+                        <span class="depth-spread-label">SPREAD</span>
+                        <span class="depth-spread-val" id="depth-spread-val">$0.01</span>
+                        <span class="depth-mid-label" id="depth-micro-val">Mid: $--</span>
+                    </div>
+                    <div class="depth-table-side asks-side">
+                        <div class="depth-side-header">ASKS (SELL ORDERS)</div>
+                        <div class="depth-rows-list" id="depth-asks-list">
+                            <div class="depth-row"><span class="d-price" style="color: #ff5252;">$--</span><span class="d-qty">-- BTC</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="depth-ratio-track" title="Real-time Order Book Imbalance Ratio">
+                    <div class="depth-ratio-fill-bid" id="depth-ratio-bar" style="width: 50%;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trade Execution Plan & Trader's Notebook -->
+        <div class="trade-plan-row" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin: 14px 0;">
+            <div class="card execution-card">
+                <div class="panel-header">
+                    <div class="panel-title-with-icon">
+                        <span class="panel-icon">📋</span>
+                        <h2>ALGORITHMIC TRADE PLAN</h2>
+                    </div>
+                    <span class="badge-rr" id="trade-rr-badge">R:R 1 : 2.0+</span>
+                </div>
+                <div class="setup-title-banner" id="setup-title-banner">
+                    <span class="setup-icon" id="setup-dir-icon">⚖️</span>
+                    <span class="setup-name" id="setup-title-text">Equilibrium Scanning &amp; Microstructure Calibration</span>
+                </div>
+                <div class="execution-levels-grid">
+                    <div class="level-box">
+                        <span class="level-label">ENTRY ANCHOR</span>
+                        <span class="level-val" id="plan-entry-val">$--</span>
+                        <span class="level-sub">Optimal Fill</span>
+                    </div>
+                    <div class="level-box">
+                        <span class="level-label">TARGET 1 (SCALP)</span>
+                        <span class="level-val val-green" id="plan-target1-val">$--</span>
+                        <span class="level-sub">Displacement Magnet</span>
+                    </div>
+                    <div class="level-box">
+                        <span class="level-label">TARGET 2 (RUNNER)</span>
+                        <span class="level-val val-green" id="plan-target2-val">$--</span>
+                        <span class="level-sub">Liquidity Pool Target</span>
+                    </div>
+                    <div class="level-box">
+                        <span class="level-label">STOP LOSS</span>
+                        <span class="level-val val-red" id="plan-stoploss-val">$--</span>
+                        <span class="level-sub">Invalidation Level</span>
+                    </div>
+                </div>
+            </div>
+            <div class="card notebook-card">
+                <div class="panel-header">
+                    <div class="panel-title-with-icon">
+                        <span class="panel-icon">📓</span>
+                        <h2>QUANT TRADER'S NOTEBOOK</h2>
+                    </div>
+                    <span class="sub-badge highlight-human">AI SYNTHESIS</span>
+                </div>
+                <div class="notebook-content">
+                    <div class="notebook-quote-box">
+                        <p class="trader-notebook-text" id="trader-notebook-text">Real-time quantitative analysis active. Tracking buyer vs seller pressure across session volume.</p>
+                    </div>
+                    <div class="notebook-meta-row">
+                        <div class="notebook-meta-item">
+                            <span class="meta-label">MICRO-VWAP</span>
+                            <span class="meta-val" id="notebook-vwap-val">$--</span>
+                        </div>
+                        <div class="notebook-meta-item">
+                            <span class="meta-label">SESSION PIVOT</span>
+                            <span class="meta-val" id="notebook-pp-val">$--</span>
+                        </div>
+                        <div class="notebook-meta-item">
+                            <span class="meta-label">MARKOV REGIME</span>
+                            <span class="meta-val" id="notebook-regime-val">Trending</span>
+                        </div>
+                        <div class="notebook-meta-item">
+                            <span class="meta-label">KELLY SIZING</span>
+                            <span class="meta-val highlight-gold" id="notebook-kelly-val">1x Unit</span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -976,6 +1148,33 @@
                     <div class="god-hud-title-box">
                         <div class="god-hud-title">GOD-MODE APEX INTELLIGENCE CONSOLE</div>
                         <div class="god-hud-sub" id="god-hud-status-sub">Multi-Model Institutional Confluence &amp; SMC Liquidity Sweep Radar</div>
+                    </div>
+                </div>
+                <div class="god-hud-metrics">
+                    <div class="god-metric-card">
+                        <span class="god-metric-label">CONFLUENCE</span>
+                        <span class="god-metric-val" id="god-confluence-val">--/26</span>
+                        <span class="god-metric-sub" id="god-confluence-sub">Scanning Models</span>
+                    </div>
+                    <div class="god-metric-card">
+                        <span class="god-metric-label">SMC LIQUIDITY</span>
+                        <span class="god-metric-val" id="god-sweep-val">POOLS RESTING</span>
+                        <span class="god-metric-sub" id="god-sweep-sub">BSL / SSL Resting</span>
+                    </div>
+                    <div class="god-metric-card">
+                        <span class="god-metric-label">FVG MAGNET</span>
+                        <span class="god-metric-val" id="god-fvg-val">$--</span>
+                        <span class="god-metric-sub" id="god-fvg-sub">Equilibrium</span>
+                    </div>
+                    <div class="god-metric-card">
+                        <span class="god-metric-label">KELLY SIZING</span>
+                        <span class="god-metric-val highlight-gold" id="god-kelly-val">1x UNIT</span>
+                        <span class="god-metric-sub" id="god-kelly-sub">Standard Edge</span>
+                    </div>
+                    <div class="god-metric-card">
+                        <span class="god-metric-label">QUANT CORE</span>
+                        <span class="god-metric-val" id="god-math-val">OU / Entropy</span>
+                        <span class="god-metric-sub" id="god-math-sub">Bayes MAP</span>
                     </div>
                 </div>
             </div>
